@@ -172,6 +172,37 @@ class FilenameTests(unittest.TestCase):
             with mock.patch.object(downloader, "default_profile_dir", return_value=Path(tmp) / "default"):
                 self.assertTrue(downloader.is_managed_profile_dir(profile))
 
+    def test_discover_cdp_base_prefers_dedicated_profile_port(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "YanhektDownloader" / "chrome-profile"
+            profile.mkdir(parents=True)
+            (profile / "DevToolsActivePort").write_text("45678\n/devtools/browser/test\n", encoding="utf-8")
+
+            with mock.patch.dict(downloader.os.environ, {"LOCALAPPDATA": str(Path(tmp) / "LocalAppData")}, clear=True):
+                self.assertEqual(downloader.discover_cdp_base(None, profile), "http://127.0.0.1:45678")
+
+    def test_chrome_launch_args_can_run_headless(self) -> None:
+        args = downloader.chrome_launch_args(
+            "chrome.exe",
+            Path("profile"),
+            "https://www.yanhekt.cn/course/12345",
+            headless=True,
+        )
+
+        self.assertIn("--headless=new", args)
+        self.assertIn("--disable-gpu", args)
+        self.assertEqual(args[-1], "https://www.yanhekt.cn/course/12345")
+
+    def test_chrome_launch_args_visible_by_default(self) -> None:
+        args = downloader.chrome_launch_args(
+            "chrome.exe",
+            Path("profile"),
+            "https://www.yanhekt.cn/course/12345",
+        )
+
+        self.assertNotIn("--headless=new", args)
+        self.assertEqual(args[-1], "https://www.yanhekt.cn/course/12345")
+
 
 if __name__ == "__main__":
     unittest.main()

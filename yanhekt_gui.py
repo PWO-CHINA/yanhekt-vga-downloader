@@ -211,6 +211,7 @@ class YanhektGui:
             command.extend(["--plan-json", "--no-repair-legacy-names"])
         elif mode == "download":
             command.extend(["--session-ids", ",".join(self.selected_session_ids)])
+            command.append("--background-browser")
         if not self.estimate_var.get():
             command.append("--no-size-estimate")
         if self.overwrite_var.get():
