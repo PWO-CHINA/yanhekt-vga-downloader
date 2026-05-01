@@ -8,6 +8,12 @@ __pycache__/
 venv/
 env/
 
+# Build and release outputs
+build/
+dist/
+release/
+*.spec
+
 # Runtime data and private browser state
 chrome-profile/
 downloads/

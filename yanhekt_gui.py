@@ -19,7 +19,13 @@ import tkinter as tk
 import yanhekt_downloader as downloader
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+def app_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+SCRIPT_DIR = app_dir()
 DEFAULT_OUTPUT = SCRIPT_DIR / "downloads"
 PLAN_PREFIX = "__YANHEKT_PLAN_JSON__"
 CHECKED = "☑"
@@ -39,6 +45,13 @@ DISABLED_BG = "#e6ebf2"
 DISABLED_TEXT = "#94a3b8"
 FONT = ("Microsoft YaHei UI", 10)
 FONT_BOLD = ("Microsoft YaHei UI", 10, "bold")
+
+
+def downloader_command_base() -> list[str]:
+    worker_exe = SCRIPT_DIR / "YanhektDownloaderWorker.exe"
+    if getattr(sys, "frozen", False) and worker_exe.exists():
+        return [str(worker_exe)]
+    return [sys.executable, str(SCRIPT_DIR / "yanhekt_downloader.py")]
 
 
 class YanhektGui:
@@ -424,9 +437,7 @@ class YanhektGui:
         self.select_none_button.configure(state=state)
 
     def command_for(self, mode: str) -> list[str]:
-        command = [
-            sys.executable,
-            str(SCRIPT_DIR / "yanhekt_downloader.py"),
+        command = downloader_command_base() + [
             self.course_var.get().strip(),
             "-o",
             self.output_var.get().strip() or str(DEFAULT_OUTPUT),

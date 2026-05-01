@@ -4,6 +4,7 @@ from unittest import mock
 from pathlib import Path
 
 import yanhekt_downloader as downloader
+import yanhekt_gui
 
 
 def fake_mp4() -> bytes:
@@ -202,6 +203,44 @@ class FilenameTests(unittest.TestCase):
 
         self.assertNotIn("--headless=new", args)
         self.assertEqual(args[-1], "https://www.yanhekt.cn/course/12345")
+
+    def test_find_ffmpeg_prefers_bundled_resource(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ffmpeg = root / "ffmpeg.exe"
+            ffmpeg.write_text("fake", encoding="utf-8")
+            with mock.patch.object(downloader, "resource_dirs", return_value=[root]):
+                self.assertEqual(downloader.find_ffmpeg(None), str(ffmpeg))
+
+    def test_find_ffmpeg_accepts_explicit_path(self) -> None:
+        self.assertEqual(downloader.find_ffmpeg("C:/tools/ffmpeg.exe"), str(Path("C:/tools/ffmpeg.exe")))
+
+    def test_gui_uses_worker_exe_when_frozen(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worker = root / "YanhektDownloaderWorker.exe"
+            worker.write_text("fake", encoding="utf-8")
+            with mock.patch.object(yanhekt_gui, "SCRIPT_DIR", root), mock.patch.object(
+                yanhekt_gui.sys,
+                "frozen",
+                True,
+                create=True,
+            ):
+                self.assertEqual(yanhekt_gui.downloader_command_base(), [str(worker)])
+
+    def test_gui_uses_python_script_in_source_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(yanhekt_gui, "SCRIPT_DIR", root), mock.patch.object(
+                yanhekt_gui.sys,
+                "frozen",
+                False,
+                create=True,
+            ):
+                self.assertEqual(
+                    yanhekt_gui.downloader_command_base(),
+                    [yanhekt_gui.sys.executable, str(root / "yanhekt_downloader.py")],
+                )
 
 
 if __name__ == "__main__":

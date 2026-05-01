@@ -32,6 +32,15 @@
 
 ## 环境要求
 
+安装版：
+
+- Windows 10/11
+- Google Chrome
+
+安装版会随包携带 `ffmpeg.exe`，但不会携带 Chrome。首次使用仍需要在工具打开的专用 Chrome 窗口中登录 Yanhekt。
+
+源码运行：
+
 - Windows 10/11
 - Python 3.10 或更新版本
 - Google Chrome
@@ -46,6 +55,27 @@ ffmpeg 可以放在以下任一位置：
 - 运行命令行时通过 `--ffmpeg` 指定路径
 
 ## 快速开始
+
+### 使用安装版 v0.0.1
+
+从 Releases 下载：
+
+```text
+YanhektDownloader_Setup_v0.0.1.exe
+```
+
+双击安装包后：
+
+1. 选择安装文件夹，默认建议为当前用户目录下的 `Programs\YanhektDownloader`。
+2. 保持“创建桌面快捷方式”勾选。
+3. 点击“安装”。
+4. 安装完成后打开 `Yanhekt Downloader`。
+5. 粘贴延河课堂课堂主页网址链接，例如 `https://www.yanhekt.cn/course/12345`。
+6. 点击“加载课程清单”，勾选要下载的课堂录屏，再点击“开始下载勾选项”。
+
+注意：安装版不是 Yanhekt 官方客户端。它仍然只使用你本人已经登录并有权限访问的内容。
+
+### 从源码运行
 
 下载或克隆仓库：
 
@@ -200,13 +230,41 @@ python -m unittest discover -s . -p "test_*.py"
 检查 Python 文件语法：
 
 ```powershell
-python -m py_compile yanhekt_downloader.py yanhekt_gui.py test_yanhekt_downloader.py
+python -m py_compile yanhekt_downloader.py yanhekt_gui.py START_YANHEKT_GUI.pyw test_yanhekt_downloader.py packaging/installer.py packaging/build_release.py
+```
+
+## 打包发布
+
+当前发布版本号记录在 [`VERSION`](VERSION)，安装包版本从 `v0.0.1` 开始，遵循 `MAJOR.MINOR.PATCH` 形式。
+
+Windows 上运行：
+
+```bat
+packaging\build_release.bat
+```
+
+脚本会完成：
+
+- 生成原创 `.ico` 图标。
+- 生成 Windows exe 版本元数据。
+- 使用 PyInstaller 构建 `YanhektDownloader.exe` 和 `YanhektDownloaderWorker.exe`。
+- 复制 `README.md`、`LICENSE`、`VERSION` 和 `ffmpeg.exe` 到安装 payload。
+- 生成最终安装包 `release\YanhektDownloader_Setup_v0.0.1.exe`。
+
+发布时建议创建 Git tag：
+
+```powershell
+git tag v0.0.1
+git push origin v0.0.1
 ```
 
 ## 仓库卫生
 
 以下内容不应进入公开仓库，已在 `.gitignore` 中排除：
 
+- `build/`
+- `dist/`
+- `release/`
 - `downloads/`
 - `chrome-profile/`
 - `ffmpeg-*full_build/`

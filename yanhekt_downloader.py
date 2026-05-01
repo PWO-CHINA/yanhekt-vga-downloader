@@ -39,6 +39,24 @@ USER_AGENT = (
 )
 
 
+def app_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def resource_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        dirs.append(Path(meipass).resolve())
+    dirs.append(app_dir())
+    source_dir = Path(__file__).resolve().parent
+    if source_dir not in dirs:
+        dirs.append(source_dir)
+    return dirs
+
+
 def default_profile_dir() -> Path:
     if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
@@ -618,10 +636,13 @@ def filename_for(item: dict[str, Any], index: int) -> str:
 def find_ffmpeg(user_path: str | None) -> str:
     if user_path:
         return str(Path(user_path))
-    script_dir = Path(__file__).resolve().parent
-    candidates = sorted(script_dir.glob("ffmpeg-*full_build/bin/ffmpeg.exe"))
-    if candidates:
-        return str(candidates[-1])
+    for root in resource_dirs():
+        bundled = root / "ffmpeg.exe"
+        if bundled.exists():
+            return str(bundled)
+        candidates = sorted(root.glob("ffmpeg-*full_build/bin/ffmpeg.exe"))
+        if candidates:
+            return str(candidates[-1])
     found = shutil.which("ffmpeg")
     if found:
         return found
@@ -1136,7 +1157,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-o",
         "--output",
-        default=str(Path(__file__).resolve().parent / "downloads"),
+        default=str(app_dir() / "downloads"),
         help="Output directory. Default: getvideo/downloads",
     )
     parser.add_argument("--cdp", default=None, help="Chrome DevTools base URL. Default: auto or http://127.0.0.1:9222")
