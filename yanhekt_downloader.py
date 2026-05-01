@@ -53,6 +53,18 @@ def no_window_creationflags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def is_managed_profile_dir(path: Path) -> bool:
+    try:
+        resolved = path.expanduser().resolve()
+        default = default_profile_dir().expanduser().resolve()
+    except OSError:
+        return False
+    return resolved == default or (
+        resolved.name == "chrome-profile"
+        and resolved.parent.name == "YanhektDownloader"
+    )
+
+
 class CdpError(RuntimeError):
     pass
 

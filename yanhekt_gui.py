@@ -7,6 +7,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -91,6 +92,9 @@ class YanhektGui:
         )
         ttk.Checkbutton(options, text="结束后保留登录浏览器", variable=self.keep_browser_var).grid(
             row=0, column=2, sticky="w"
+        )
+        ttk.Button(options, text="清除浏览器登录", command=self.clear_browser_login).grid(
+            row=0, column=3, sticky="w"
         )
 
         buttons = ttk.Frame(outer)
@@ -442,6 +446,35 @@ class YanhektGui:
         messagebox.showinfo("修复旧文件名", f"已修复 {len(renamed)} 个文件。半成品 .part 没有改动。")
         if self.plan_items:
             self.status_var.set("文件名已修复，建议重新加载课程清单")
+
+    def clear_browser_login(self) -> None:
+        if self.process is not None:
+            messagebox.showinfo("正在运行", "请先停止当前任务，再清除浏览器登录。")
+            return
+        profile_dir = downloader.default_profile_dir().expanduser().resolve()
+        if not downloader.is_managed_profile_dir(profile_dir):
+            messagebox.showerror("安全检查失败", f"拒绝清除非专用浏览器目录：\n{profile_dir}")
+            return
+        if not profile_dir.exists():
+            messagebox.showinfo("无需清除", f"专用浏览器登录目录不存在：\n{profile_dir}")
+            return
+        ok = messagebox.askyesno(
+            "清除浏览器登录",
+            "这会删除本工具专用 Chrome 配置目录，包括 Yanhekt 登录状态、缓存和历史。\n\n"
+            "不会影响你的主 Chrome 浏览器。\n\n"
+            f"将删除：\n{profile_dir}\n\n"
+            "确定继续吗？",
+        )
+        if not ok:
+            return
+        try:
+            shutil.rmtree(profile_dir)
+        except Exception as exc:
+            messagebox.showerror("清除失败", f"无法删除专用浏览器目录：\n{profile_dir}\n\n{exc}")
+            return
+        self.clear_plan("已清除专用浏览器登录，请重新加载课程清单")
+        self.append_log(f"\n=== 已清除专用浏览器登录 ===\n{profile_dir}\n")
+        messagebox.showinfo("已清除", "专用浏览器登录状态已清除。下次运行会重新打开 Chrome 并要求登录。")
 
     def on_close(self) -> None:
         if self.process is not None:

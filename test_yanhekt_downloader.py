@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import yanhekt_downloader as downloader
@@ -133,6 +134,19 @@ class FilenameTests(unittest.TestCase):
 
     def test_parse_session_ids_accepts_common_separators(self) -> None:
         self.assertEqual(downloader.parse_session_ids("1, 2;3  4"), {"1", "2", "3", "4"})
+
+    def test_managed_profile_dir_accepts_default_profile(self) -> None:
+        self.assertTrue(downloader.is_managed_profile_dir(downloader.default_profile_dir()))
+
+    def test_managed_profile_dir_rejects_main_chrome_profile(self) -> None:
+        main_chrome = Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data"
+        self.assertFalse(downloader.is_managed_profile_dir(main_chrome))
+
+    def test_managed_profile_dir_accepts_named_tool_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "YanhektDownloader" / "chrome-profile"
+            with mock.patch.object(downloader, "default_profile_dir", return_value=Path(tmp) / "default"):
+                self.assertTrue(downloader.is_managed_profile_dir(profile))
 
 
 if __name__ == "__main__":
