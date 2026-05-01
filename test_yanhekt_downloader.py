@@ -10,20 +10,16 @@ def fake_mp4() -> bytes:
 
 
 class FilenameTests(unittest.TestCase):
-    def test_filename_keeps_digits_date_and_mp4_extension(self) -> None:
+    def test_filename_uses_title_only_with_underscores(self) -> None:
         item = {
             "started_at": "2026-05-01 19:30:00",
-            "title": "第1节 课程: A/B?",
+            "title": "第1周 星期二 第4大节",
             "session_id": 858571,
         }
 
         name = downloader.filename_for(item, 1)
 
-        self.assertTrue(name.endswith("_课堂录屏.mp4"))
-        self.assertIn("01_2026-05-01_1930_", name)
-        self.assertIn("session-858571", name)
-        self.assertNotIn("/", name)
-        self.assertNotIn(":", name)
+        self.assertEqual(name, "第1周_星期二_第4大节_课堂录屏.mp4")
 
     def test_long_title_preserves_vga_mp4_suffix(self) -> None:
         item = {
@@ -67,7 +63,7 @@ class FilenameTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
             legacy = output_dir / ".mp_"
-            target = output_dir / "01_good_name_session-1_课堂录屏.mp4"
+            target = output_dir / "good_name_课堂录屏.mp4"
             legacy.write_bytes(fake_mp4())
 
             renamed = downloader.repair_legacy_mp_extensions(output_dir, [target])
@@ -90,6 +86,21 @@ class FilenameTests(unittest.TestCase):
             self.assertFalse(old_name.exists())
             self.assertTrue((output_dir / "01_same_session-1_课堂录屏.mp4").exists())
 
+    def test_repair_legacy_long_recording_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            old_name = output_dir / "01_2026-03-03_1515_第1周 星期二 第4大节_session-829412_课堂录屏.mp4"
+            old_name.write_bytes(fake_mp4())
+
+            renamed = downloader.repair_legacy_mp_extensions(output_dir)
+
+            self.assertEqual(
+                [(old.name, new.name) for old, new in renamed],
+                [("01_2026-03-03_1515_第1周 星期二 第4大节_session-829412_课堂录屏.mp4", "第1周_星期二_第4大节_课堂录屏.mp4")],
+            )
+            self.assertFalse(old_name.exists())
+            self.assertTrue((output_dir / "第1周_星期二_第4大节_课堂录屏.mp4").exists())
+
     def test_planned_names_are_distinct(self) -> None:
         items = [
             {"started_at": "", "title": "same", "session_id": 1},
@@ -100,8 +111,8 @@ class FilenameTests(unittest.TestCase):
             planned = downloader.build_download_plan(items, Path(tmp))
 
         self.assertNotEqual(planned[0][1].name, planned[1][1].name)
-        self.assertEqual(planned[0][1].name, "01_same_session-1_课堂录屏.mp4")
-        self.assertEqual(planned[1][1].name, "02_same_session-1_课堂录屏.mp4")
+        self.assertEqual(planned[0][1].name, "same_课堂录屏.mp4")
+        self.assertEqual(planned[1][1].name, "same_课堂录屏 (2).mp4")
 
     def test_parse_duration_accepts_colon_formats(self) -> None:
         self.assertEqual(downloader.parse_duration("01:02"), 62)
@@ -118,7 +129,7 @@ class FilenameTests(unittest.TestCase):
             selected = downloader.filter_plan_by_session_ids(planned, {"2"})
 
         self.assertEqual(len(selected), 1)
-        self.assertEqual(selected[0][1].name, "02_second_session-2_课堂录屏.mp4")
+        self.assertEqual(selected[0][1].name, "second_课堂录屏.mp4")
 
     def test_parse_session_ids_accepts_common_separators(self) -> None:
         self.assertEqual(downloader.parse_session_ids("1, 2;3  4"), {"1", "2", "3", "4"})

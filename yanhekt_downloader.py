@@ -558,14 +558,17 @@ def sanitize_filename(name: str, max_len: int = 180) -> str:
     return name[:max_len].rstrip(" .")
 
 
+def title_filename_stem(title: str, fallback: str = "课堂录屏", max_len: int = 160) -> str:
+    stem = sanitize_filename(title or fallback, max_len=max_len)
+    stem = re.sub(r"\s+", "_", stem)
+    stem = re.sub(r"_+", "_", stem).strip("_ .")
+    return stem or fallback
+
+
 def filename_for(item: dict[str, Any], index: int) -> str:
-    started = item.get("started_at") or ""
-    date = ""
-    match = re.match(r"(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})", started)
-    if match:
-        date = f"{match.group(1)}-{match.group(2)}-{match.group(3)}_{match.group(4)}{match.group(5)}_"
+    del index
     title = item.get("title") or f"session-{item.get('session_id')}"
-    stem = sanitize_filename(f"{index:02d}_{date}{title}_session-{item.get('session_id')}", max_len=170)
+    stem = title_filename_stem(str(title), max_len=160)
     return sanitize_filename(f"{stem}_课堂录屏.mp4")
 
 
@@ -625,6 +628,17 @@ def is_probably_complete_mp4(path: Path) -> bool:
         return False
 
 
+def legacy_long_recording_target(path: Path) -> Path | None:
+    match = re.match(
+        r"^\d+_\d{4}-\d{2}-\d{2}_\d{4}_(.+)_session-\d+_课堂录屏\.mp4$",
+        path.name,
+    )
+    if not match:
+        return None
+    title_stem = title_filename_stem(match.group(1), max_len=160)
+    return path.with_name(sanitize_filename(f"{title_stem}_课堂录屏.mp4"))
+
+
 def repair_legacy_mp_extensions(
     output_dir: Path,
     target_paths: Iterable[Path] | None = None,
@@ -665,6 +679,15 @@ def repair_legacy_mp_extensions(
         target = unique_path(path.with_name(path.name[: -len("_VGA.mp4")] + "_课堂录屏.mp4"))
         if target == path:
             continue
+        path.rename(target)
+        renamed.append((path, target))
+    for path in sorted(output_dir.glob("*_课堂录屏.mp4")):
+        if not path.is_file() or not is_probably_complete_mp4(path):
+            continue
+        target = legacy_long_recording_target(path)
+        if target is None or target == path:
+            continue
+        target = unique_path(target)
         path.rename(target)
         renamed.append((path, target))
     return renamed
