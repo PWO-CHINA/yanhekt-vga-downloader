@@ -14,6 +14,7 @@ import threading
 import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import Callable
 import tkinter as tk
 
 import yanhekt_downloader as downloader
@@ -72,9 +73,17 @@ class YanhektGui:
 
         ttk.Label(outer, text="课堂主页网址链接").grid(row=1, column=0, sticky="w", padx=(0, 8))
         self.course_entry = ttk.Entry(outer, textvariable=self.course_var)
-        self.course_entry.grid(row=1, column=1, columnspan=3, sticky="ew")
+        self.course_entry.grid(row=1, column=1, sticky="ew")
         self.course_entry.bind("<Return>", self.on_course_enter)
         self.course_entry.bind("<KP_Enter>", self.on_course_enter)
+        self.load_button = self.make_action_button(
+            outer,
+            text="加载课程清单",
+            command=self.load_plan,
+            bg="#2563eb",
+            active_bg="#1d4ed8",
+        )
+        self.load_button.grid(row=1, column=2, columnspan=2, sticky="ew", padx=(8, 0))
 
         ttk.Label(outer, text="保存到").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
         ttk.Entry(outer, textvariable=self.output_var).grid(row=2, column=1, sticky="ew", pady=(10, 0))
@@ -102,11 +111,17 @@ class YanhektGui:
 
         buttons = ttk.Frame(outer)
         buttons.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(14, 8))
-        buttons.columnconfigure(8, weight=1)
-        self.load_button = ttk.Button(buttons, text="加载课程清单", command=self.load_plan)
-        self.load_button.grid(row=0, column=0, padx=(0, 8))
-        self.start_button = ttk.Button(buttons, text="下载勾选项", command=self.start_download, state="disabled")
-        self.start_button.grid(row=0, column=1, padx=(0, 8))
+        buttons.columnconfigure(7, weight=1)
+        self.start_button = self.make_action_button(
+            buttons,
+            text="开始下载勾选项",
+            command=self.start_download,
+            bg="#16803c",
+            active_bg="#11632f",
+            state="disabled",
+        )
+        self.start_button.grid(row=0, column=0, sticky="w", padx=(0, 18))
+        ttk.Separator(buttons, orient="vertical").grid(row=0, column=1, sticky="ns", padx=(0, 18))
         self.select_all_button = ttk.Button(buttons, text="全选", command=self.select_all, state="disabled")
         self.select_all_button.grid(row=0, column=2, padx=(0, 8))
         self.select_none_button = ttk.Button(buttons, text="全不选", command=self.select_none, state="disabled")
@@ -115,7 +130,7 @@ class YanhektGui:
         self.repair_button.grid(row=0, column=4, padx=(0, 8))
         self.stop_button = ttk.Button(buttons, text="停止", command=self.stop_process, state="disabled")
         self.stop_button.grid(row=0, column=5, padx=(0, 8))
-        ttk.Label(buttons, textvariable=self.status_var).grid(row=0, column=8, sticky="e")
+        ttk.Label(buttons, textvariable=self.status_var).grid(row=0, column=7, sticky="e")
 
         self.tree = ttk.Treeview(
             outer,
@@ -152,6 +167,52 @@ class YanhektGui:
         log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         log_scroll.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=log_scroll.set)
+
+    def make_action_button(
+        self,
+        parent: tk.Widget,
+        text: str,
+        command: Callable[[], None],
+        bg: str,
+        active_bg: str,
+        state: str = "normal",
+    ) -> tk.Button:
+        button = tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=bg,
+            fg="white",
+            activebackground=active_bg,
+            activeforeground="white",
+            disabledforeground="#d8dee9",
+            bd=0,
+            relief="flat",
+            padx=18,
+            pady=7,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        setattr(button, "_enabled_bg", bg)
+        setattr(button, "_enabled_active_bg", active_bg)
+        self.set_action_button_state(button, state)
+        return button
+
+    def set_action_button_state(self, button: tk.Button, state: str) -> None:
+        if state == "disabled":
+            button.configure(
+                state="disabled",
+                bg="#94a3b8",
+                activebackground="#94a3b8",
+                cursor="arrow",
+            )
+            return
+        button.configure(
+            state="normal",
+            bg=getattr(button, "_enabled_bg", "#2563eb"),
+            activebackground=getattr(button, "_enabled_active_bg", "#1d4ed8"),
+            cursor="hand2",
+        )
 
     def choose_output(self) -> None:
         selected = filedialog.askdirectory(initialdir=self.output_var.get() or str(DEFAULT_OUTPUT))
@@ -190,14 +251,14 @@ class YanhektGui:
 
     def set_running(self, running: bool) -> None:
         normal = "disabled" if running else "normal"
-        self.load_button.configure(state=normal)
+        self.set_action_button_state(self.load_button, normal)
         self.repair_button.configure(state=normal)
         self.stop_button.configure(state="normal" if running else "disabled")
         self.set_plan_controls_enabled(bool(self.plan_items) and not running)
 
     def set_plan_controls_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
-        self.start_button.configure(state=state)
+        self.set_action_button_state(self.start_button, state)
         self.select_all_button.configure(state=state)
         self.select_none_button.configure(state=state)
 
