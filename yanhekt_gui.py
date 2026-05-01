@@ -71,7 +71,10 @@ class YanhektGui:
         )
 
         ttk.Label(outer, text="课堂主页网址链接").grid(row=1, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(outer, textvariable=self.course_var).grid(row=1, column=1, columnspan=3, sticky="ew")
+        self.course_entry = ttk.Entry(outer, textvariable=self.course_var)
+        self.course_entry.grid(row=1, column=1, columnspan=3, sticky="ew")
+        self.course_entry.bind("<Return>", self.on_course_enter)
+        self.course_entry.bind("<KP_Enter>", self.on_course_enter)
 
         ttk.Label(outer, text="保存到").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
         ttk.Entry(outer, textvariable=self.output_var).grid(row=2, column=1, sticky="ew", pady=(10, 0))
@@ -266,6 +269,11 @@ class YanhektGui:
     def load_plan(self) -> None:
         self.clear_plan()
         self.start_process("plan")
+
+    def on_course_enter(self, _event: tk.Event[tk.Misc]) -> str:
+        if self.process is None:
+            self.load_plan()
+        return "break"
 
     def start_download(self) -> None:
         if not self.plan_items:
