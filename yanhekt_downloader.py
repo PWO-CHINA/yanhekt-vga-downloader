@@ -580,7 +580,13 @@ def title_filename_stem(title: str, fallback: str = "课堂录屏", max_len: int
 def filename_for(item: dict[str, Any], index: int) -> str:
     del index
     title = item.get("title") or f"session-{item.get('session_id')}"
-    stem = title_filename_stem(str(title), max_len=160)
+    course_name = str(item.get("course_name") or "").strip()
+    if course_name:
+        course_stem = title_filename_stem(course_name, max_len=80)
+        title_stem = title_filename_stem(str(title), max_len=90)
+        stem = f"{course_stem}_{title_stem}"
+    else:
+        stem = title_filename_stem(str(title), max_len=160)
     return sanitize_filename(f"{stem}_课堂录屏.mp4")
 
 
