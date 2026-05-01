@@ -1204,6 +1204,91 @@ def main() -> int:
         if launched_proc is not None and not args.keep_browser_open:
             launched_proc.terminate()
 
+    def stop_launched_for_reconnect() -> None:
+        nonlocal launched_proc
+        if launched_proc is not None and launched_proc.poll() is None:
+            launched_proc.terminate()
+            try:
+                launched_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                launched_proc.kill()
+        launched_proc = None
+
+    def relaunch_dedicated_chrome(reason: str) -> None:
+        nonlocal launched_proc, cdp_base
+        if args.no_launch:
+            raise CdpError(reason)
+        print(reason)
+        print("Reopening the dedicated Chrome window and continuing...")
+        stop_launched_for_reconnect()
+        launched_proc, cdp_base = launch_dedicated_chrome(
+            find_chrome(args.chrome),
+            Path(args.profile_dir).expanduser().resolve(),
+            course_url,
+        )
+
+    def connect_or_reopen_chrome() -> tuple[CdpClient, str, dict[str, Any]]:
+        try:
+            return connect_yanhe_session(cdp_base, course_url)
+        except Exception as exc:
+            relaunch_dedicated_chrome(
+                "Chrome connection is unavailable or was closed while the task was running. "
+                f"Details: {exc}"
+            )
+            return connect_yanhe_session(cdp_base, course_url)
+
+    def wait_ready_or_login(cdp_client: CdpClient, attached_session_id: str, timeout: int) -> None:
+        try:
+            wait_for_page_ready(cdp_client, session_id=attached_session_id, timeout=timeout)
+        except CdpError:
+            if launched_proc is None:
+                raise
+            print("Please log in to yanhekt.cn in the Chrome window that just opened.")
+            print(f"Waiting up to {args.login_timeout} seconds...")
+            wait_for_page_ready(
+                cdp_client,
+                session_id=attached_session_id,
+                timeout=args.login_timeout,
+            )
+
+    def sign_recording_url(item: dict[str, Any], user_badge: str) -> str:
+        last_error: Exception | None = None
+        for attempt in range(2):
+            cdp_client: CdpClient | None = None
+            try:
+                cdp_client, attached_session_id, _target = connect_or_reopen_chrome()
+                wait_ready_or_login(cdp_client, attached_session_id, timeout=15)
+                signed = cdp_client.evaluate(
+                    sign_url_expression(item["raw_vga"], user_badge),
+                    timeout=30,
+                    session_id=attached_session_id,
+                )
+                return str(signed)
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0 and not args.no_launch:
+                    try:
+                        relaunch_dedicated_chrome(
+                            "Chrome was closed or disconnected while preparing this video. "
+                            "The downloader will retry once."
+                        )
+                    except Exception as relaunch_exc:
+                        last_error = relaunch_exc
+                        break
+                    continue
+                break
+            finally:
+                if cdp_client is not None:
+                    try:
+                        cdp_client.close()
+                    except Exception:
+                        pass
+        raise CdpError(
+            "Could not prepare the video URL. If the Chrome window was closed, "
+            "please keep the reopened Chrome window open and retry. "
+            f"Details: {last_error}"
+        )
+
     try:
         cdp, session_id, _target = connect_yanhe_session(cdp_base, course_url)
     except Exception as exc:
@@ -1296,16 +1381,11 @@ def main() -> int:
                 print(f"[replace invalid] {output.name}")
             duration = parse_duration(item.get("duration"))
             print(f"[{item_index}/{total_count}] {output.name}")
-            cdp, session_id, _target = connect_yanhe_session(cdp_base, course_url)
             try:
-                wait_for_page_ready(cdp, session_id=session_id, timeout=15)
-                signed_url = cdp.evaluate(
-                    sign_url_expression(item["raw_vga"], str(info["user_badge"])),
-                    timeout=30,
-                    session_id=session_id,
-                )
-            finally:
-                cdp.close()
+                signed_url = sign_recording_url(item, str(info["user_badge"]))
+            except CdpError as exc:
+                print(f"[failed] {output.name}: {exc}", file=sys.stderr)
+                return 2
 
             expected_size = None
             if not args.no_size_estimate:
