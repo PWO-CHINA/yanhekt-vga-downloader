@@ -63,14 +63,14 @@ class YanhektGui:
         outer.rowconfigure(7, weight=2)
 
         intro = (
-            "请粘贴课程列表链接，例如 https://www.yanhekt.cn/course/12345。"
+            "请粘贴延河课堂课堂主页网址链接，例如 https://www.yanhekt.cn/course/12345。"
             "这里要填 course/数字，不是单节 session/数字播放页。"
         )
         ttk.Label(outer, text=intro, wraplength=980).grid(
             row=0, column=0, columnspan=4, sticky="w", pady=(0, 12)
         )
 
-        ttk.Label(outer, text="课程列表链接").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(outer, text="课堂主页网址链接").grid(row=1, column=0, sticky="w", padx=(0, 8))
         ttk.Entry(outer, textvariable=self.course_var).grid(row=1, column=1, columnspan=3, sticky="ew")
 
         ttk.Label(outer, text="保存到").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
@@ -173,7 +173,7 @@ class YanhektGui:
     def validate_course(self) -> str | None:
         course = self.course_var.get().strip()
         if not course:
-            messagebox.showerror("缺少课程链接", "请先填写课程列表链接，例如 https://www.yanhekt.cn/course/12345。")
+            messagebox.showerror("缺少课程链接", "请先填写延河课堂课堂主页网址链接，例如 https://www.yanhekt.cn/course/12345。")
             return None
         if "/session/" in course:
             messagebox.showerror("链接类型不对", "这里要填课程列表链接 course/数字，不是单节 session/数字播放页。")
