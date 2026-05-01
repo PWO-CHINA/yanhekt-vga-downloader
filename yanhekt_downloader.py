@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Batch-download Yanhekt course VGA recordings you can already access in Chrome.
+Batch-download Yanhekt course classroom recordings you can already access in Chrome.
 
 Safety notes:
 - Connects only to a local Chrome DevTools endpoint on 127.0.0.1.
@@ -559,7 +559,7 @@ def filename_for(item: dict[str, Any], index: int) -> str:
         date = f"{match.group(1)}-{match.group(2)}-{match.group(3)}_{match.group(4)}{match.group(5)}_"
     title = item.get("title") or f"session-{item.get('session_id')}"
     stem = sanitize_filename(f"{index:02d}_{date}{title}_session-{item.get('session_id')}", max_len=170)
-    return sanitize_filename(f"{stem}_VGA.mp4")
+    return sanitize_filename(f"{stem}_课堂录屏.mp4")
 
 
 def find_ffmpeg(user_path: str | None) -> str:
@@ -650,6 +650,14 @@ def repair_legacy_mp_extensions(
         if target is None:
             target = path.with_name(path.name[:-4] + ".mp4")
         target = unique_path(target)
+        path.rename(target)
+        renamed.append((path, target))
+    for path in sorted(output_dir.glob("*_VGA.mp4")):
+        if not path.is_file() or not is_probably_complete_mp4(path):
+            continue
+        target = unique_path(path.with_name(path.name[: -len("_VGA.mp4")] + "_课堂录屏.mp4"))
+        if target == path:
+            continue
         path.rename(target)
         renamed.append((path, target))
     return renamed
@@ -997,9 +1005,9 @@ def run_ffmpeg(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Download VGA recordings from a yanhekt course page using your open Chrome login."
+        description="Download classroom recordings from a yanhekt course page using your open Chrome login."
     )
-    parser.add_argument("course_url", help="Example: https://www.yanhekt.cn/course/12345")
+    parser.add_argument("course_url", nargs="?", help="Example: https://www.yanhekt.cn/course/12345")
     parser.add_argument(
         "-o",
         "--output",
@@ -1064,8 +1072,36 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def prompt_for_missing_args(args: argparse.Namespace) -> bool:
+    if args.course_url:
+        return True
+    print("Yanhekt 课堂录屏批量下载")
+    print()
+    print("请粘贴“课程列表链接”（course/数字），不是单节视频播放页（session/数字）。")
+    print("例子：https://www.yanhekt.cn/course/12345")
+    print()
+    try:
+        args.course_url = input("课程列表链接或课程 ID: ").strip()
+        if not args.course_url:
+            print("没有输入课程链接。", file=sys.stderr)
+            return False
+        print()
+        print("直接回车会保存到默认文件夹：")
+        print(f"  {args.output}")
+        output = input("保存文件夹: ").strip()
+        if output:
+            args.output = output
+        print()
+        return True
+    except (EOFError, KeyboardInterrupt):
+        print("\n已取消。", file=sys.stderr)
+        return False
+
+
 def main() -> int:
     args = parse_args()
+    if not prompt_for_missing_args(args):
+        return 2
     cdp_base = discover_cdp_base(args.cdp)
     course_url = args.course_url
     if re.fullmatch(r"\d+", course_url):
@@ -1132,7 +1168,7 @@ def main() -> int:
                 print(f"  renamed: {old.name} -> {new.name}")
 
     print(f"Course: {info.get('course_name')} ({info.get('course_id')})")
-    print(f"Found VGA recordings: {len(items)}")
+    print(f"Found classroom recordings: {len(items)}")
     print(f"Output: {output_dir}")
 
     if args.dry_run:

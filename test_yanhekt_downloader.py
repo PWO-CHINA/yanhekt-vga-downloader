@@ -19,7 +19,7 @@ class FilenameTests(unittest.TestCase):
 
         name = downloader.filename_for(item, 1)
 
-        self.assertTrue(name.endswith("_VGA.mp4"))
+        self.assertTrue(name.endswith("_课堂录屏.mp4"))
         self.assertIn("01_2026-05-01_1930_", name)
         self.assertIn("session-858571", name)
         self.assertNotIn("/", name)
@@ -35,7 +35,7 @@ class FilenameTests(unittest.TestCase):
         name = downloader.filename_for(item, 1)
 
         self.assertLessEqual(len(name), 180)
-        self.assertTrue(name.endswith("_VGA.mp4"))
+        self.assertTrue(name.endswith("_课堂录屏.mp4"))
 
     def test_repair_legacy_mp_extension_skips_part_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -67,13 +67,28 @@ class FilenameTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
             legacy = output_dir / ".mp_"
-            target = output_dir / "01_good_name_session-1_VGA.mp4"
+            target = output_dir / "01_good_name_session-1_课堂录屏.mp4"
             legacy.write_bytes(fake_mp4())
 
             renamed = downloader.repair_legacy_mp_extensions(output_dir, [target])
 
             self.assertEqual([(old.name, new.name) for old, new in renamed], [(".mp_", target.name)])
             self.assertTrue(target.exists())
+
+    def test_repair_legacy_vga_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            old_name = output_dir / "01_same_session-1_VGA.mp4"
+            old_name.write_bytes(fake_mp4())
+
+            renamed = downloader.repair_legacy_mp_extensions(output_dir)
+
+            self.assertEqual(
+                [(old.name, new.name) for old, new in renamed],
+                [("01_same_session-1_VGA.mp4", "01_same_session-1_课堂录屏.mp4")],
+            )
+            self.assertFalse(old_name.exists())
+            self.assertTrue((output_dir / "01_same_session-1_课堂录屏.mp4").exists())
 
     def test_planned_names_are_distinct(self) -> None:
         items = [
@@ -85,8 +100,8 @@ class FilenameTests(unittest.TestCase):
             planned = downloader.build_download_plan(items, Path(tmp))
 
         self.assertNotEqual(planned[0][1].name, planned[1][1].name)
-        self.assertEqual(planned[0][1].name, "01_same_session-1_VGA.mp4")
-        self.assertEqual(planned[1][1].name, "02_same_session-1_VGA.mp4")
+        self.assertEqual(planned[0][1].name, "01_same_session-1_课堂录屏.mp4")
+        self.assertEqual(planned[1][1].name, "02_same_session-1_课堂录屏.mp4")
 
     def test_parse_duration_accepts_colon_formats(self) -> None:
         self.assertEqual(downloader.parse_duration("01:02"), 62)

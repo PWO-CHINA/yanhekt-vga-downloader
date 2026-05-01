@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small Tkinter launcher for the Yanhekt VGA downloader."""
+"""Small Tkinter launcher for the Yanhekt classroom recording downloader."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import threading
+import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 import tkinter as tk
@@ -23,7 +24,7 @@ DEFAULT_OUTPUT = SCRIPT_DIR / "downloads"
 class YanhektGui:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Yanhekt VGA 批量下载")
+        self.root.title("Yanhekt 课堂录屏批量下载")
         self.root.geometry("900x620")
         self.root.minsize(760, 520)
 
@@ -88,7 +89,7 @@ class YanhektGui:
         buttons = ttk.Frame(outer)
         buttons.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(14, 8))
         buttons.columnconfigure(5, weight=1)
-        self.start_button = ttk.Button(buttons, text="开始下载 VGA", command=self.start_download)
+        self.start_button = ttk.Button(buttons, text="开始下载课堂录屏", command=self.start_download)
         self.start_button.grid(row=0, column=0, padx=(0, 8))
         self.list_button = ttk.Button(buttons, text="只列出清单", command=self.list_only)
         self.list_button.grid(row=0, column=1, padx=(0, 8))
@@ -311,4 +312,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception:
+        log_path = SCRIPT_DIR / "yanhekt_gui_error.log"
+        log_path.write_text(traceback.format_exc(), encoding="utf-8")
+        try:
+            messagebox.showerror("GUI 启动失败", f"错误日志已保存到：\n{log_path}")
+        except Exception:
+            pass
+        raise
