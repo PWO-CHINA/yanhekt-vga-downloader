@@ -63,6 +63,7 @@ class YanhektGui:
         self.selected_session_ids: set[str] = set()
         self.plan_course_input = ""
         self.plan_output_dir = ""
+        self.checkbox_images: list[tk.PhotoImage] = []
 
         self.setup_styles()
         self._build_ui()
@@ -127,8 +128,7 @@ class YanhektGui:
             background=[("disabled", DISABLED_BG), ("pressed", "#fecaca"), ("active", "#fecaca")],
             foreground=[("disabled", DISABLED_TEXT)],
         )
-        self.style.configure("TCheckbutton", background=APP_BG, foreground=TEXT, padding=(0, 4))
-        self.style.map("TCheckbutton", background=[("active", APP_BG)])
+        self.setup_checkbox_style()
         self.style.configure(
             "Treeview",
             background=PANEL_BG,
@@ -154,6 +154,78 @@ class YanhektGui:
             bordercolor=BORDER,
             lightcolor=BLUE,
             darkcolor=BLUE,
+        )
+
+    def make_checkbox_image(
+        self,
+        checked: bool,
+        fill: str,
+        border: str,
+        check_color: str = "white",
+    ) -> tk.PhotoImage:
+        image = tk.PhotoImage(width=18, height=16)
+        image.put(APP_BG, to=(0, 0, 18, 16))
+        image.put(border, to=(2, 2, 14, 14))
+        image.put(fill, to=(3, 3, 13, 13))
+        if checked:
+            for x, y in [
+                (5, 8),
+                (6, 9),
+                (7, 10),
+                (8, 9),
+                (9, 8),
+                (10, 7),
+                (11, 6),
+                (5, 9),
+                (6, 10),
+                (7, 11),
+                (8, 10),
+                (9, 9),
+                (10, 8),
+                (11, 7),
+            ]:
+                image.put(check_color, to=(x, y, x + 1, y + 1))
+        return image
+
+    def setup_checkbox_style(self) -> None:
+        unchecked = self.make_checkbox_image(False, PANEL_BG, "#94a3b8")
+        checked = self.make_checkbox_image(True, BLUE, BLUE)
+        disabled_unchecked = self.make_checkbox_image(False, "#eef2f7", "#cbd5e1")
+        disabled_checked = self.make_checkbox_image(True, "#cbd5e1", "#cbd5e1")
+        self.checkbox_images.extend([unchecked, checked, disabled_unchecked, disabled_checked])
+        try:
+            self.style.element_create(
+                "Tick.Checkbutton.indicator",
+                "image",
+                unchecked,
+                ("disabled", "selected", disabled_checked),
+                ("selected", checked),
+                ("disabled", disabled_unchecked),
+                border=0,
+                sticky="",
+            )
+            self.style.layout(
+                "Tick.TCheckbutton",
+                [
+                    (
+                        "Checkbutton.padding",
+                        {
+                            "sticky": "nswe",
+                            "children": [
+                                ("Tick.Checkbutton.indicator", {"side": "left", "sticky": ""}),
+                                ("Checkbutton.label", {"side": "left", "sticky": "w"}),
+                            ],
+                        },
+                    )
+                ],
+            )
+        except tk.TclError:
+            pass
+        self.style.configure("Tick.TCheckbutton", background=APP_BG, foreground=TEXT, padding=(0, 4))
+        self.style.map(
+            "Tick.TCheckbutton",
+            background=[("active", APP_BG)],
+            foreground=[("disabled", DISABLED_TEXT)],
         )
 
     def _build_ui(self) -> None:
@@ -198,13 +270,28 @@ class YanhektGui:
 
         options = ttk.Frame(outer)
         options.grid(row=3, column=1, columnspan=3, sticky="w", pady=(10, 0))
-        ttk.Checkbutton(options, text="下载前估算占用空间", variable=self.estimate_var).grid(
+        ttk.Checkbutton(
+            options,
+            text="下载前估算占用空间",
+            variable=self.estimate_var,
+            style="Tick.TCheckbutton",
+        ).grid(
             row=0, column=0, sticky="w", padx=(0, 20)
         )
-        ttk.Checkbutton(options, text="覆盖已有 mp4", variable=self.overwrite_var).grid(
+        ttk.Checkbutton(
+            options,
+            text="覆盖已有 mp4",
+            variable=self.overwrite_var,
+            style="Tick.TCheckbutton",
+        ).grid(
             row=0, column=1, sticky="w", padx=(0, 20)
         )
-        ttk.Checkbutton(options, text="结束后保留登录浏览器", variable=self.keep_browser_var).grid(
+        ttk.Checkbutton(
+            options,
+            text="结束后保留登录浏览器",
+            variable=self.keep_browser_var,
+            style="Tick.TCheckbutton",
+        ).grid(
             row=0, column=2, sticky="w"
         )
         ttk.Button(options, text="清除浏览器登录", command=self.clear_browser_login).grid(
