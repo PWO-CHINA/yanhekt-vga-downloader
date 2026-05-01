@@ -22,6 +22,7 @@
 ## 功能
 
 - 从课程列表链接批量读取课堂录屏条目。
+- 在 GUI 中勾选要下载的课程，并预览最终文件名。
 - 下载课堂录屏为 `.mp4` 文件。
 - 按课程序号、上课时间、标题和 session id 自动命名。
 - 显示下载进度、预计剩余时间和估算占用空间。
@@ -58,11 +59,15 @@ cd yanhekt-vga-downloader
 START_YANHEKT_GUI.bat
 ```
 
+如果你的系统已经正确关联 `.pyw`，也可以直接双击 `START_YANHEKT_GUI.pyw`，启动时不会显示命令行窗口。
+
 在窗口中：
 
 1. 输入课程列表链接，例如 `https://www.yanhekt.cn/course/12345`。
 2. 选择保存目录，默认是 `downloads/`。
-3. 点击“开始下载课堂录屏”。
+3. 点击“加载课程清单”。
+4. 在表格中勾选要下载的课程，并预览每个文件的保存名称。
+5. 点击“下载勾选项”。
 
 注意：这里需要的是课程列表页 `course/数字`，不是单节播放页 `session/数字`。也可以直接输入课程 ID，例如 `12345`。
 
@@ -116,6 +121,7 @@ python yanhekt_downloader.py 12345 --ffmpeg C:\path\to\ffmpeg.exe
 | `course_url` | 课程列表链接或课程 ID。省略时进入交互式输入。 |
 | `-o, --output` | 保存目录，默认是 `downloads/`。 |
 | `--dry-run` | 只列出将要下载的视频和文件名，不实际下载。 |
+| `--session-ids` | 只下载指定 session id，多个 id 用逗号或空格分隔。 |
 | `--newest-first` | 按最新课程优先下载。 |
 | `--limit N` | 只下载排序后的前 N 个视频。 |
 | `--overwrite` | 覆盖已存在的 mp4 文件。 |

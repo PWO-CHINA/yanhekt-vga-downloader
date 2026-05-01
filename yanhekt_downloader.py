@@ -47,6 +47,12 @@ def default_profile_dir() -> Path:
     return base / "YanhektDownloader" / "chrome-profile"
 
 
+def no_window_creationflags() -> int:
+    if os.name != "nt":
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 class CdpError(RuntimeError):
     pass
 
@@ -296,6 +302,7 @@ def launch_dedicated_chrome(
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        creationflags=no_window_creationflags(),
     )
 
     deadline = time.time() + 30
@@ -676,6 +683,57 @@ def build_download_plan(
     return planned
 
 
+def parse_session_ids(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    return {part.strip() for part in re.split(r"[,;\s]+", value) if part.strip()}
+
+
+def filter_plan_by_session_ids(
+    planned: list[tuple[dict[str, Any], Path]],
+    session_ids: set[str],
+) -> list[tuple[dict[str, Any], Path]]:
+    if not session_ids:
+        return planned
+    return [
+        (item, output)
+        for item, output in planned
+        if str(item.get("session_id")) in session_ids
+    ]
+
+
+def plan_json_payload(
+    info: dict[str, Any],
+    planned: list[tuple[dict[str, Any], Path]],
+    output_dir: Path,
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for item, output in planned:
+        exists = output.exists()
+        size = output.stat().st_size if exists and output.is_file() else 0
+        rows.append(
+            {
+                "session_id": item.get("session_id"),
+                "title": item.get("title") or f"session-{item.get('session_id')}",
+                "started_at": item.get("started_at") or "",
+                "duration": item.get("duration") or "",
+                "session_url": item.get("session_url") or "",
+                "filename": output.name,
+                "output_path": str(output),
+                "exists": exists,
+                "complete_mp4": bool(exists and is_probably_complete_mp4(output)),
+                "size": size,
+            }
+        )
+    return {
+        "course_id": info.get("course_id"),
+        "course_name": info.get("course_name"),
+        "output_dir": str(output_dir),
+        "count": len(rows),
+        "items": rows,
+    }
+
+
 def format_bytes(value: int | float | None) -> str:
     if value is None or value < 0:
         return "unknown"
@@ -939,6 +997,7 @@ def run_ffmpeg(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        creationflags=no_window_creationflags(),
     )
     start_time = time.time()
     current_time: float | None = None
@@ -1026,6 +1085,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--newest-first", action="store_true", help="Download newest lessons first.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing mp4 files.")
     parser.add_argument("--dry-run", action="store_true", help="List videos and filenames without downloading.")
+    parser.add_argument(
+        "--plan-json",
+        action="store_true",
+        help="Print a machine-readable download plan for GUI selection and exit.",
+    )
+    parser.add_argument(
+        "--session-ids",
+        default="",
+        help="Comma/space separated session ids to download. Filenames keep their full-course numbering.",
+    )
     parser.add_argument(
         "--no-size-estimate",
         action="store_true",
@@ -1160,6 +1229,21 @@ def main() -> int:
     output_dir = Path(args.output).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     planned = build_download_plan(items, output_dir)
+    session_ids = parse_session_ids(args.session_ids)
+    selected_planned = filter_plan_by_session_ids(planned, session_ids)
+    if session_ids and not selected_planned:
+        print("No matching session ids were found in this course plan.", file=sys.stderr)
+        cleanup_launched()
+        return 2
+    if args.plan_json:
+        print(
+            "__YANHEKT_PLAN_JSON__"
+            + json.dumps(plan_json_payload(info, planned, output_dir), ensure_ascii=False),
+            flush=True,
+        )
+        cleanup_launched()
+        return 0
+    planned = selected_planned
     if not args.dry_run and not args.no_repair_legacy_names:
         renamed = repair_legacy_mp_extensions(output_dir, [output for _, output in planned])
         if renamed:

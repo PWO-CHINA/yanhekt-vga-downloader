@@ -107,6 +107,22 @@ class FilenameTests(unittest.TestCase):
         self.assertEqual(downloader.parse_duration("01:02"), 62)
         self.assertEqual(downloader.parse_duration("01:02:03"), 3723)
 
+    def test_filter_plan_by_session_ids_keeps_planned_filename(self) -> None:
+        items = [
+            {"started_at": "", "title": "first", "session_id": 1},
+            {"started_at": "", "title": "second", "session_id": 2},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            planned = downloader.build_download_plan(items, Path(tmp))
+            selected = downloader.filter_plan_by_session_ids(planned, {"2"})
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0][1].name, "02_second_session-2_课堂录屏.mp4")
+
+    def test_parse_session_ids_accepts_common_separators(self) -> None:
+        self.assertEqual(downloader.parse_session_ids("1, 2;3  4"), {"1", "2", "3", "4"})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import re
@@ -19,25 +20,33 @@ import yanhekt_downloader as downloader
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT = SCRIPT_DIR / "downloads"
+PLAN_PREFIX = "__YANHEKT_PLAN_JSON__"
+CHECKED = "☑"
+UNCHECKED = "☐"
 
 
 class YanhektGui:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Yanhekt 课堂录屏批量下载")
-        self.root.geometry("900x620")
-        self.root.minsize(760, 520)
+        self.root.geometry("1120x720")
+        self.root.minsize(900, 560)
 
         self.course_var = tk.StringVar(value="")
         self.output_var = tk.StringVar(value=str(DEFAULT_OUTPUT))
         self.estimate_var = tk.BooleanVar(value=True)
         self.overwrite_var = tk.BooleanVar(value=False)
         self.keep_browser_var = tk.BooleanVar(value=False)
-        self.status_var = tk.StringVar(value="准备就绪")
+        self.status_var = tk.StringVar(value="先加载课程清单")
         self.progress_var = tk.DoubleVar(value=0.0)
 
         self.process: subprocess.Popen[str] | None = None
-        self.events: queue.Queue[tuple[str, str | int]] = queue.Queue()
+        self.process_mode = ""
+        self.events: queue.Queue[tuple[str, str | int | dict[str, object]]] = queue.Queue()
+        self.plan_items: list[dict[str, object]] = []
+        self.selected_session_ids: set[str] = set()
+        self.plan_course_input = ""
+        self.plan_output_dir = ""
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -49,24 +58,22 @@ class YanhektGui:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         outer.columnconfigure(1, weight=1)
-        outer.rowconfigure(6, weight=1)
+        outer.rowconfigure(5, weight=3)
+        outer.rowconfigure(7, weight=2)
 
         intro = (
             "请粘贴课程列表链接，例如 https://www.yanhekt.cn/course/12345。"
             "这里要填 course/数字，不是单节 session/数字播放页。"
         )
-        ttk.Label(outer, text=intro, wraplength=820).grid(
+        ttk.Label(outer, text=intro, wraplength=980).grid(
             row=0, column=0, columnspan=4, sticky="w", pady=(0, 12)
         )
 
         ttk.Label(outer, text="课程列表链接").grid(row=1, column=0, sticky="w", padx=(0, 8))
-        course_entry = ttk.Entry(outer, textvariable=self.course_var)
-        course_entry.grid(row=1, column=1, columnspan=3, sticky="ew")
+        ttk.Entry(outer, textvariable=self.course_var).grid(row=1, column=1, columnspan=3, sticky="ew")
 
         ttk.Label(outer, text="保存到").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
-        ttk.Entry(outer, textvariable=self.output_var).grid(
-            row=2, column=1, sticky="ew", pady=(10, 0)
-        )
+        ttk.Entry(outer, textvariable=self.output_var).grid(row=2, column=1, sticky="ew", pady=(10, 0))
         ttk.Button(outer, text="选择文件夹", command=self.choose_output).grid(
             row=2, column=2, sticky="ew", padx=(8, 0), pady=(10, 0)
         )
@@ -88,39 +95,62 @@ class YanhektGui:
 
         buttons = ttk.Frame(outer)
         buttons.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(14, 8))
-        buttons.columnconfigure(5, weight=1)
-        self.start_button = ttk.Button(buttons, text="开始下载课堂录屏", command=self.start_download)
-        self.start_button.grid(row=0, column=0, padx=(0, 8))
-        self.list_button = ttk.Button(buttons, text="只列出清单", command=self.list_only)
-        self.list_button.grid(row=0, column=1, padx=(0, 8))
-        self.repair_button = ttk.Button(buttons, text="修复旧 .mp_ 文件", command=self.repair_legacy)
-        self.repair_button.grid(row=0, column=2, padx=(0, 8))
+        buttons.columnconfigure(8, weight=1)
+        self.load_button = ttk.Button(buttons, text="加载课程清单", command=self.load_plan)
+        self.load_button.grid(row=0, column=0, padx=(0, 8))
+        self.start_button = ttk.Button(buttons, text="下载勾选项", command=self.start_download, state="disabled")
+        self.start_button.grid(row=0, column=1, padx=(0, 8))
+        self.select_all_button = ttk.Button(buttons, text="全选", command=self.select_all, state="disabled")
+        self.select_all_button.grid(row=0, column=2, padx=(0, 8))
+        self.select_none_button = ttk.Button(buttons, text="全不选", command=self.select_none, state="disabled")
+        self.select_none_button.grid(row=0, column=3, padx=(0, 8))
+        self.repair_button = ttk.Button(buttons, text="修复旧文件名", command=self.repair_legacy)
+        self.repair_button.grid(row=0, column=4, padx=(0, 8))
         self.stop_button = ttk.Button(buttons, text="停止", command=self.stop_process, state="disabled")
-        self.stop_button.grid(row=0, column=3, padx=(0, 8))
-        ttk.Label(buttons, textvariable=self.status_var).grid(row=0, column=5, sticky="e")
+        self.stop_button.grid(row=0, column=5, padx=(0, 8))
+        ttk.Label(buttons, textvariable=self.status_var).grid(row=0, column=8, sticky="e")
 
-        self.progress = ttk.Progressbar(
+        self.tree = ttk.Treeview(
             outer,
-            variable=self.progress_var,
-            maximum=100,
-            mode="determinate",
+            columns=("selected", "started", "title", "filename", "status"),
+            show="headings",
+            selectmode="browse",
         )
-        self.progress.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+        self.tree.heading("selected", text="下载")
+        self.tree.heading("started", text="上课时间")
+        self.tree.heading("title", text="课程标题")
+        self.tree.heading("filename", text="预览文件名")
+        self.tree.heading("status", text="状态")
+        self.tree.column("selected", width=56, minwidth=48, anchor="center", stretch=False)
+        self.tree.column("started", width=150, minwidth=120, stretch=False)
+        self.tree.column("title", width=260, minwidth=160)
+        self.tree.column("filename", width=430, minwidth=220)
+        self.tree.column("status", width=120, minwidth=90, stretch=False)
+        self.tree.grid(row=5, column=0, columnspan=4, sticky="nsew")
+        tree_scroll = ttk.Scrollbar(outer, orient="vertical", command=self.tree.yview)
+        tree_scroll.grid(row=5, column=4, sticky="ns")
+        self.tree.configure(yscrollcommand=tree_scroll.set)
+        self.tree.bind("<Button-1>", self.on_tree_click)
+        self.tree.bind("<space>", self.on_tree_space)
+
+        self.progress = ttk.Progressbar(outer, variable=self.progress_var, maximum=100, mode="determinate")
+        self.progress.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(10, 8))
 
         log_frame = ttk.Frame(outer)
-        log_frame.grid(row=6, column=0, columnspan=4, sticky="nsew")
+        log_frame.grid(row=7, column=0, columnspan=4, sticky="nsew")
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
-        self.log_text = tk.Text(log_frame, height=20, wrap="word", undo=False)
+        self.log_text = tk.Text(log_frame, height=10, wrap="word", undo=False)
         self.log_text.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
-        scroll.grid(row=0, column=1, sticky="ns")
-        self.log_text.configure(yscrollcommand=scroll.set)
+        log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        log_scroll.grid(row=0, column=1, sticky="ns")
+        self.log_text.configure(yscrollcommand=log_scroll.set)
 
     def choose_output(self) -> None:
         selected = filedialog.askdirectory(initialdir=self.output_var.get() or str(DEFAULT_OUTPUT))
         if selected:
             self.output_var.set(selected)
+            self.clear_plan("保存目录已更改，请重新加载课程清单")
 
     def open_output(self) -> None:
         output_dir = Path(self.output_var.get()).expanduser()
@@ -148,14 +178,23 @@ class YanhektGui:
             messagebox.showwarning("确认链接", "没有识别到 course/数字。仍会尝试运行，但建议填课程列表页链接。")
         return course
 
-    def set_running(self, running: bool) -> None:
-        state = "disabled" if running else "normal"
-        self.start_button.configure(state=state)
-        self.list_button.configure(state=state)
-        self.repair_button.configure(state=state)
-        self.stop_button.configure(state="normal" if running else "disabled")
+    def resolved_output_dir(self) -> str:
+        return str(Path(self.output_var.get().strip() or str(DEFAULT_OUTPUT)).expanduser().resolve())
 
-    def command_for(self, dry_run: bool) -> list[str]:
+    def set_running(self, running: bool) -> None:
+        normal = "disabled" if running else "normal"
+        self.load_button.configure(state=normal)
+        self.repair_button.configure(state=normal)
+        self.stop_button.configure(state="normal" if running else "disabled")
+        self.set_plan_controls_enabled(bool(self.plan_items) and not running)
+
+    def set_plan_controls_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        self.start_button.configure(state=state)
+        self.select_all_button.configure(state=state)
+        self.select_none_button.configure(state=state)
+
+    def command_for(self, mode: str) -> list[str]:
         command = [
             sys.executable,
             str(SCRIPT_DIR / "yanhekt_downloader.py"),
@@ -164,8 +203,10 @@ class YanhektGui:
             self.output_var.get().strip() or str(DEFAULT_OUTPUT),
             "--progress-lines",
         ]
-        if dry_run:
-            command.append("--dry-run")
+        if mode == "plan":
+            command.extend(["--plan-json", "--no-repair-legacy-names"])
+        elif mode == "download":
+            command.extend(["--session-ids", ",".join(self.selected_session_ids)])
         if not self.estimate_var.get():
             command.append("--no-size-estimate")
         if self.overwrite_var.get():
@@ -174,7 +215,7 @@ class YanhektGui:
             command.append("--keep-browser-open")
         return command
 
-    def start_process(self, dry_run: bool = False) -> None:
+    def start_process(self, mode: str) -> None:
         if self.process is not None:
             return
         if self.validate_course() is None:
@@ -183,9 +224,10 @@ class YanhektGui:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         self.progress_var.set(0.0)
-        self.status_var.set("正在启动")
+        self.process_mode = mode
+        self.status_var.set("正在加载课程清单" if mode == "plan" else "正在启动下载")
         self.set_running(True)
-        self.append_log("\n=== 开始运行 ===\n")
+        self.append_log("\n=== 加载课程清单 ===\n" if mode == "plan" else "\n=== 开始下载勾选项 ===\n")
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
@@ -195,7 +237,7 @@ class YanhektGui:
             creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
         try:
             self.process = subprocess.Popen(
-                self.command_for(dry_run),
+                self.command_for(mode),
                 cwd=str(SCRIPT_DIR),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -208,6 +250,7 @@ class YanhektGui:
             )
         except Exception as exc:
             self.process = None
+            self.process_mode = ""
             self.set_running(False)
             self.status_var.set("启动失败")
             messagebox.showerror("启动失败", str(exc))
@@ -215,16 +258,107 @@ class YanhektGui:
 
         threading.Thread(target=self.read_process_output, daemon=True).start()
 
-    def start_download(self) -> None:
-        self.start_process(dry_run=False)
+    def load_plan(self) -> None:
+        self.clear_plan()
+        self.start_process("plan")
 
-    def list_only(self) -> None:
-        self.start_process(dry_run=True)
+    def start_download(self) -> None:
+        if not self.plan_items:
+            messagebox.showinfo("还没有清单", "请先点击“加载课程清单”，确认要下载的课程。")
+            return
+        if self.plan_course_input != self.course_var.get().strip() or self.plan_output_dir != self.resolved_output_dir():
+            messagebox.showinfo("清单需要刷新", "课程链接或保存目录已经变化，请重新加载课程清单。")
+            return
+        if not self.selected_session_ids:
+            messagebox.showinfo("没有选择课程", "请至少勾选一节课。")
+            return
+        self.start_process("download")
+
+    def clear_plan(self, status: str | None = None) -> None:
+        self.plan_items = []
+        self.selected_session_ids = set()
+        self.plan_course_input = ""
+        self.plan_output_dir = ""
+        for row_id in self.tree.get_children():
+            self.tree.delete(row_id)
+        self.set_plan_controls_enabled(False)
+        if status:
+            self.status_var.set(status)
+
+    def render_plan(self, payload: dict[str, object]) -> None:
+        self.clear_plan()
+        self.plan_items = list(payload.get("items", []))  # type: ignore[arg-type]
+        self.plan_course_input = self.course_var.get().strip()
+        self.plan_output_dir = self.resolved_output_dir()
+        self.selected_session_ids = {str(item.get("session_id")) for item in self.plan_items}
+        for item in self.plan_items:
+            session_id = str(item.get("session_id"))
+            status = "已存在" if item.get("complete_mp4") else ("文件存在" if item.get("exists") else "待下载")
+            self.tree.insert(
+                "",
+                "end",
+                iid=session_id,
+                values=(
+                    CHECKED,
+                    str(item.get("started_at") or ""),
+                    str(item.get("title") or ""),
+                    str(item.get("filename") or ""),
+                    status,
+                ),
+            )
+        self.set_plan_controls_enabled(bool(self.plan_items))
+        course_name = str(payload.get("course_name") or "课程")
+        self.status_var.set(f"已加载 {len(self.plan_items)} 节课：{course_name}")
+        self.append_log(f"已加载 {len(self.plan_items)} 节课，可在上方勾选后下载。\n")
+
+    def set_checked(self, session_id: str, checked: bool) -> None:
+        if checked:
+            self.selected_session_ids.add(session_id)
+            marker = CHECKED
+        else:
+            self.selected_session_ids.discard(session_id)
+            marker = UNCHECKED
+        values = list(self.tree.item(session_id, "values"))
+        if values:
+            values[0] = marker
+            self.tree.item(session_id, values=values)
+        self.status_var.set(f"已选择 {len(self.selected_session_ids)} / {len(self.plan_items)} 节课")
+
+    def toggle_row(self, session_id: str) -> None:
+        self.set_checked(session_id, session_id not in self.selected_session_ids)
+
+    def on_tree_click(self, event: tk.Event[tk.Misc]) -> None:
+        if self.process is not None:
+            return
+        row_id = self.tree.identify_row(event.y)
+        column = self.tree.identify_column(event.x)
+        if row_id and column == "#1":
+            self.toggle_row(row_id)
+
+    def on_tree_space(self, _event: tk.Event[tk.Misc]) -> str:
+        focus = self.tree.focus()
+        if focus and self.process is None:
+            self.toggle_row(focus)
+        return "break"
+
+    def select_all(self) -> None:
+        for item in self.plan_items:
+            self.set_checked(str(item.get("session_id")), True)
+
+    def select_none(self) -> None:
+        for item in self.plan_items:
+            self.set_checked(str(item.get("session_id")), False)
 
     def read_process_output(self) -> None:
         assert self.process is not None
         if self.process.stdout is not None:
             for line in self.process.stdout:
+                if line.startswith(PLAN_PREFIX):
+                    try:
+                        self.events.put(("plan", json.loads(line[len(PLAN_PREFIX):])))
+                    except json.JSONDecodeError as exc:
+                        self.events.put(("line", f"课程清单解析失败：{exc}\n"))
+                    continue
                 self.events.put(("line", line))
         return_code = self.process.wait()
         self.events.put(("done", return_code))
@@ -239,14 +373,23 @@ class YanhektGui:
                 line = str(payload).replace("\r", "\n")
                 self.append_log(line)
                 self.update_status_from_line(line)
+            elif kind == "plan":
+                self.render_plan(payload)  # type: ignore[arg-type]
             elif kind == "done":
                 code = int(payload)
+                mode = self.process_mode
                 self.process = None
+                self.process_mode = ""
                 self.set_running(False)
                 if code == 0:
-                    self.progress_var.set(100.0)
-                    self.status_var.set("完成")
-                    self.append_log("=== 已完成 ===\n")
+                    if mode == "download":
+                        self.progress_var.set(100.0)
+                        self.status_var.set("下载完成")
+                        self.append_log("=== 下载完成 ===\n")
+                    elif mode == "plan" and not self.plan_items:
+                        self.status_var.set("没有读取到课程清单")
+                    else:
+                        self.append_log("=== 已完成 ===\n")
                 else:
                     self.status_var.set(f"已退出，代码 {code}")
                     self.append_log(f"=== 已退出，代码 {code} ===\n")
@@ -273,13 +416,14 @@ class YanhektGui:
     def stop_process(self) -> None:
         if self.process is None:
             return
-        self.append_log("\n[stop] 正在停止当前下载...\n")
+        self.append_log("\n[stop] 正在停止当前任务...\n")
         if os.name == "nt":
             subprocess.run(
                 ["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         else:
             self.process.terminate()
@@ -287,18 +431,21 @@ class YanhektGui:
     def repair_legacy(self) -> None:
         output_dir = Path(self.output_var.get().strip() or str(DEFAULT_OUTPUT)).expanduser()
         output_dir.mkdir(parents=True, exist_ok=True)
-        renamed = downloader.repair_legacy_mp_extensions(output_dir)
+        planned_paths = [Path(str(item.get("output_path"))) for item in self.plan_items if item.get("output_path")]
+        renamed = downloader.repair_legacy_mp_extensions(output_dir, planned_paths)
         if not renamed:
-            messagebox.showinfo("修复旧文件名", "没有找到需要修复的 .mp_ 成品文件。半成品 .part 不会被改名。")
+            messagebox.showinfo("修复旧文件名", "没有找到需要修复的旧文件名。半成品 .part 不会被改名。")
             return
-        self.append_log("\n=== 修复旧 .mp_ 文件 ===\n")
+        self.append_log("\n=== 修复旧文件名 ===\n")
         for old, new in renamed:
             self.append_log(f"{old.name} -> {new.name}\n")
         messagebox.showinfo("修复旧文件名", f"已修复 {len(renamed)} 个文件。半成品 .part 没有改动。")
+        if self.plan_items:
+            self.status_var.set("文件名已修复，建议重新加载课程清单")
 
     def on_close(self) -> None:
         if self.process is not None:
-            if not messagebox.askyesno("仍在运行", "下载仍在运行，要停止并退出吗？"):
+            if not messagebox.askyesno("仍在运行", "当前任务仍在运行，要停止并退出吗？"):
                 return
             self.stop_process()
         self.root.destroy()
