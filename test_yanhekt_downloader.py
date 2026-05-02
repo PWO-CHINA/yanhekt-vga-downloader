@@ -3,6 +3,7 @@ import json
 import queue
 import tempfile
 import unittest
+from collections import namedtuple
 from unittest import mock
 from pathlib import Path
 
@@ -199,7 +200,7 @@ class FilenameTests(unittest.TestCase):
             with mock.patch.dict(downloader.os.environ, {"LOCALAPPDATA": str(Path(tmp) / "LocalAppData")}, clear=True):
                 self.assertEqual(downloader.discover_cdp_base(None, profile), "http://127.0.0.1:45678")
 
-    def test_discover_cdp_base_can_find_edge_profile_port(self) -> None:
+    def test_discover_cdp_base_does_not_scan_main_edge_profile_port(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             local_app_data = Path(tmp) / "LocalAppData"
             edge_profile = local_app_data / "Microsoft" / "Edge" / "User Data"
@@ -207,9 +208,9 @@ class FilenameTests(unittest.TestCase):
             (edge_profile / "DevToolsActivePort").write_text("56789\n/devtools/browser/edge\n", encoding="utf-8")
 
             with mock.patch.dict(downloader.os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=True):
-                self.assertEqual(downloader.discover_cdp_base(None, None), "http://127.0.0.1:56789")
+                self.assertEqual(downloader.discover_cdp_base(None, None), downloader.DEFAULT_CDP)
 
-    def test_browser_ws_url_can_use_edge_devtools_port_file(self) -> None:
+    def test_browser_ws_url_does_not_use_main_edge_devtools_port_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             local_app_data = Path(tmp) / "LocalAppData"
             edge_profile = local_app_data / "Microsoft" / "Edge" / "User Data"
@@ -221,10 +222,39 @@ class FilenameTests(unittest.TestCase):
                 "http_json",
                 side_effect=RuntimeError("no version endpoint"),
             ):
-                self.assertEqual(
-                    downloader.browser_ws_url("http://127.0.0.1:9222"),
-                    "ws://127.0.0.1:56789/devtools/browser/edge",
-                )
+                with self.assertRaises(downloader.CdpError):
+                    downloader.browser_ws_url("http://127.0.0.1:9222")
+
+    def test_sanitize_filename_avoids_windows_reserved_names(self) -> None:
+        self.assertEqual(downloader.sanitize_filename("CON.mp4"), "CON_file.mp4")
+        self.assertEqual(downloader.sanitize_filename("aux"), "aux_file")
+
+    def test_plan_filename_is_shortened_for_deep_output_dir(self) -> None:
+        items = [
+            {
+                "course_name": "很长的课程名" * 20,
+                "title": "很长的标题" * 40,
+                "session_id": 1,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / ("deep" * 40)
+            planned = downloader.build_download_plan(items, output_dir)
+
+        self.assertLessEqual(len(str(planned[0][1])), downloader.MAX_WINDOWS_PATH_CHARS)
+
+    def test_ensure_enough_free_space_raises_clear_error(self) -> None:
+        usage = namedtuple("usage", "total used free")(10_000_000, 9_500_000, 500_000)
+        with mock.patch.object(downloader.shutil, "disk_usage", return_value=usage):
+            with self.assertRaises(downloader.InsufficientSpaceError):
+                downloader.ensure_enough_free_space(Path("D:/Downloads"), 5_000_000)
+
+    def test_ensure_writable_directory_rejects_too_deep_windows_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            too_deep = Path(tmp) / ("deep" * 80)
+            with mock.patch.object(downloader.os, "name", "nt"):
+                with self.assertRaisesRegex(OSError, "路径太深"):
+                    downloader.ensure_writable_directory(too_deep)
 
     def test_chrome_launch_args_can_run_headless(self) -> None:
         args = downloader.chrome_launch_args(
@@ -348,6 +378,18 @@ class FilenameTests(unittest.TestCase):
             ):
                 self.assertEqual(yanhekt_gui.downloader_command_base(), [str(worker)])
 
+    def test_gui_frozen_missing_worker_reports_incomplete_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(yanhekt_gui, "SCRIPT_DIR", root), mock.patch.object(
+                yanhekt_gui.sys,
+                "frozen",
+                True,
+                create=True,
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "安装不完整"):
+                    yanhekt_gui.downloader_command_base()
+
     def test_gui_uses_python_script_in_source_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -430,6 +472,42 @@ class InstallerTests(unittest.TestCase):
 
             self.assertIn("桌面快捷方式创建失败", logs[-1])
 
+    def test_validate_installation_requires_worker_and_runtime_files(self) -> None:
+        installer = load_installer_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            install_dir = Path(tmp)
+            for name in installer.REQUIRED_PAYLOAD_FILES:
+                if name != installer.WORKER_EXE_NAME:
+                    (install_dir / name).write_text("x", encoding="utf-8")
+
+            with self.assertRaisesRegex(FileNotFoundError, installer.WORKER_EXE_NAME):
+                installer.validate_installation(install_dir)
+
+    def test_install_returns_warning_when_shortcut_fails(self) -> None:
+        installer = load_installer_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            install_dir = Path(tmp) / "Install"
+            logs: list[str] = []
+            with mock.patch.object(installer, "check_free_space"), mock.patch.object(
+                installer,
+                "extract_payload",
+                side_effect=lambda target, log: target.mkdir(parents=True, exist_ok=True),
+            ), mock.patch.object(installer, "validate_installation"), mock.patch.object(
+                installer,
+                "create_desktop_shortcut",
+                return_value=False,
+            ):
+                warnings = installer.install(install_dir, shortcut=True, launch=False, log=logs.append)
+
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("桌面快捷方式创建失败", warnings[0])
+
+    def test_launch_app_missing_exe_is_explicit_error(self) -> None:
+        installer = load_installer_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(FileNotFoundError, "找不到主程序"):
+                installer.launch_app(Path(tmp))
+
 
 class GuiCompletionTests(unittest.TestCase):
     class FakeVar:
@@ -461,8 +539,11 @@ class GuiCompletionTests(unittest.TestCase):
         gui.root = self.FakeRoot()
         gui.set_running = mock.Mock()
         gui.append_log = mock.Mock()
+        gui.recent_lines = []
+        gui.error_dialog_shown = False
 
-        yanhekt_gui.YanhektGui.poll_events(gui)
+        with mock.patch.object(yanhekt_gui.messagebox, "showerror"):
+            yanhekt_gui.YanhektGui.poll_events(gui)
         return gui
 
     def has_destroy_callback(self, gui: yanhekt_gui.YanhektGui) -> bool:

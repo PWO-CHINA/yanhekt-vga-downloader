@@ -38,6 +38,16 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/136.0.0.0 Safari/537.36"
 )
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+MAX_WINDOWS_PATH_CHARS = 240
+MIN_FREE_SPACE_RESERVE = 500 * 1024 * 1024
 
 
 def configure_standard_streams() -> None:
@@ -72,6 +82,20 @@ def default_profile_dir() -> Path:
     else:
         base = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
     return base / "YanhektDownloader" / "chrome-profile"
+
+
+def default_output_dir() -> Path:
+    downloads = Path.home() / "Downloads"
+    if os.name != "nt":
+        config = Path.home() / ".config" / "user-dirs.dirs"
+        try:
+            text = config.read_text(encoding="utf-8")
+            match = re.search(r'XDG_DOWNLOAD_DIR="([^"]+)"', text)
+            if match:
+                downloads = Path(match.group(1).replace("$HOME", str(Path.home())))
+        except OSError:
+            pass
+    return downloads / "YanhektDownloader"
 
 
 def no_window_creationflags() -> int:
@@ -116,6 +140,10 @@ def is_managed_profile_dir(path: Path) -> bool:
 
 
 class CdpError(RuntimeError):
+    pass
+
+
+class InsufficientSpaceError(OSError):
     pass
 
 
@@ -304,11 +332,7 @@ def read_devtools_port(profile_dir: Path) -> str | None:
 
 
 def local_browser_profile_dirs() -> list[Path]:
-    local_app_data = Path(os.environ.get("LOCALAPPDATA", ""))
-    return [
-        local_app_data / "Google" / "Chrome" / "User Data",
-        local_app_data / "Microsoft" / "Edge" / "User Data",
-    ]
+    return []
 
 
 def discover_cdp_base(user_base: str | None, profile_dir: Path | None = None) -> str:
@@ -319,10 +343,6 @@ def discover_cdp_base(user_base: str | None, profile_dir: Path | None = None) ->
         return env.rstrip("/")
     if profile_dir is not None:
         port = read_devtools_port(profile_dir)
-        if port:
-            return f"http://127.0.0.1:{port}"
-    for browser_profile in local_browser_profile_dirs():
-        port = read_devtools_port(browser_profile)
         if port:
             return f"http://127.0.0.1:{port}"
     return DEFAULT_CDP
@@ -459,16 +479,6 @@ def browser_ws_url(cdp_base: str) -> str:
     port = parsed.port
     if not port:
         port = 80 if parsed.scheme == "http" else 443
-
-    for browser_profile in local_browser_profile_dirs():
-        port_file = browser_profile / "DevToolsActivePort"
-        if not port_file.exists():
-            continue
-        lines = port_file.read_text(encoding="utf-8").splitlines()
-        if len(lines) >= 2:
-            file_port = lines[0].strip() or str(port)
-            path = lines[1].strip()
-            return f"ws://{host}:{file_port}{path}"
 
     raise CdpError(f"Could not discover browser WebSocket URL from {cdp_base}")
 
@@ -654,19 +664,32 @@ def wait_for_page_ready(cdp: CdpClient, session_id: str | None = None, timeout: 
     raise CdpError("yanhekt/延河课堂 page is not ready or not logged in. " + last_error)
 
 
+def split_filename_suffix(name: str) -> tuple[str, str]:
+    suffix_match = re.search(r"(\.[A-Za-z0-9]{1,10})$", name)
+    if not suffix_match:
+        return name, ""
+    suffix = suffix_match.group(1)
+    return name[: -len(suffix)].rstrip(" ."), suffix
+
+
+def clamp_filename(name: str, max_len: int) -> str:
+    stem, suffix = split_filename_suffix(name)
+    stem = stem or "video"
+    if stem.upper() in WINDOWS_RESERVED_NAMES:
+        stem = f"{stem}_file"
+    if len(stem) + len(suffix) > max_len:
+        stem = stem[: max(1, max_len - len(suffix))].rstrip(" .") or "video"
+        if stem.upper() in WINDOWS_RESERVED_NAMES:
+            stem = (stem + "_file")[: max(1, max_len - len(suffix))].rstrip(" .") or "video"
+    return stem + suffix
+
+
 def sanitize_filename(name: str, max_len: int = 180) -> str:
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
     name = re.sub(r"\s+", " ", name).strip(" .")
     if not name:
         return "video"
-    suffix_match = re.search(r"(\.[A-Za-z0-9]{1,10})$", name)
-    if suffix_match:
-        suffix = suffix_match.group(1)
-        stem = name[: -len(suffix)].rstrip(" .") or "video"
-        if len(stem) + len(suffix) > max_len:
-            stem = stem[: max(1, max_len - len(suffix))].rstrip(" .") or "video"
-        return stem + suffix
-    return name[:max_len].rstrip(" .")
+    return clamp_filename(name, max_len)
 
 
 def title_filename_stem(title: str, fallback: str = "课堂录屏", max_len: int = 160) -> str:
@@ -687,6 +710,47 @@ def filename_for(item: dict[str, Any], index: int) -> str:
     else:
         stem = title_filename_stem(str(title), max_len=160)
     return sanitize_filename(f"{stem}_课堂录屏.mp4")
+
+
+def fit_filename_for_directory(filename: str, output_dir: Path, max_path_chars: int = MAX_WINDOWS_PATH_CHARS) -> str:
+    base = str(output_dir)
+    minimum_filename_len = len("video.mp4")
+    max_filename_len = max(minimum_filename_len, max_path_chars - len(base) - 1)
+    if len(base) + 1 + len(filename) <= max_path_chars:
+        return filename
+    return sanitize_filename(filename, max_len=max_filename_len)
+
+
+def ensure_writable_directory(path: Path) -> None:
+    max_output_dir_chars = MAX_WINDOWS_PATH_CHARS - len("video.mp4") - 1
+    if os.name == "nt" and len(str(path)) > max_output_dir_chars:
+        raise OSError(
+            "保存目录路径太深，可能导致 Windows 或 ffmpeg 无法写入。"
+            "请换到更短的路径，例如 Downloads\\YanhektDownloader。"
+        )
+    path.mkdir(parents=True, exist_ok=True)
+    if not path.is_dir():
+        raise NotADirectoryError(f"保存路径不是文件夹：{path}")
+    probe = path / ".yanhekt_write_test.tmp"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+    finally:
+        try:
+            probe.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def ensure_enough_free_space(output_dir: Path, expected_size: int | None) -> None:
+    if expected_size is None or expected_size <= 0:
+        return
+    free = shutil.disk_usage(output_dir).free
+    required = int(expected_size * 1.1) + MIN_FREE_SPACE_RESERVE
+    if free < required:
+        raise InsufficientSpaceError(
+            "保存目录所在磁盘空间不足："
+            f"预计需要至少 {format_bytes(required)}，当前可用 {format_bytes(free)}。"
+        )
 
 
 def find_ffmpeg(user_path: str | None) -> str:
@@ -820,7 +884,8 @@ def build_download_plan(
     planned: list[tuple[dict[str, Any], Path]] = []
     reserved_names: set[str] = set()
     for idx, item in enumerate(items, start=1):
-        output = unique_planned_path(output_dir / filename_for(item, idx), reserved_names)
+        filename = fit_filename_for_directory(filename_for(item, idx), output_dir)
+        output = unique_planned_path(output_dir / filename, reserved_names)
         reserved_names.add(output.name.casefold())
         planned.append((item, output))
     return planned
@@ -1217,8 +1282,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-o",
         "--output",
-        default=str(app_dir() / "downloads"),
-        help="Output directory. Default: getvideo/downloads",
+        default=str(default_output_dir()),
+        help="Output directory. Default: ~/Downloads/YanhektDownloader",
     )
     parser.add_argument(
         "--cdp",
@@ -1490,8 +1555,13 @@ def main() -> int:
     if args.limit:
         items = items[: args.limit]
 
-    output_dir = Path(args.output).expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir = Path(args.output).expanduser().resolve()
+        ensure_writable_directory(output_dir)
+    except OSError as exc:
+        print(f"保存目录不可用：{exc}", file=sys.stderr)
+        cleanup_launched()
+        return 2
     planned = build_download_plan(items, output_dir)
     session_ids = parse_session_ids(args.session_ids)
     selected_planned = filter_plan_by_session_ids(planned, session_ids)
@@ -1561,7 +1631,11 @@ def main() -> int:
                         f"  estimated size: ~{format_bytes(expected_size)} "
                         f"({segment_count} segments, {sample_note})"
                     )
+                    ensure_enough_free_space(output_dir, expected_size)
                 except Exception as exc:
+                    if isinstance(exc, InsufficientSpaceError):
+                        print(f"[failed] {output.name}: {exc}", file=sys.stderr)
+                        return 2
                     print(f"  estimated size: unknown ({exc})")
 
             try:

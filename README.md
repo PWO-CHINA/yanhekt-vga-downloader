@@ -56,12 +56,12 @@ ffmpeg 可以放在以下任一位置：
 
 ## 快速开始
 
-### 使用安装版 v0.0.4
+### 使用安装版 v0.0.5
 
 从 Releases 下载：
 
 ```text
-YanhektDownloader_Setup_v0.0.4.exe
+YanhektDownloader_Setup_v0.0.5.exe
 ```
 
 双击安装包后：
@@ -69,7 +69,7 @@ YanhektDownloader_Setup_v0.0.4.exe
 1. 选择安装文件夹，默认建议为当前用户目录下的 `Programs\YanhektDownloader`。
 2. 保持“创建桌面快捷方式”勾选，桌面会创建 `yanhekt-延河课堂录屏下载器`。
 3. 点击“安装”。
-4. 安装完成后打开 `yanhekt-延河课堂录屏下载器`。v0.0.4 会优先使用 Chrome；如果没有安装 Chrome，会自动使用系统自带的 Microsoft Edge。
+4. 安装完成后打开 `yanhekt-延河课堂录屏下载器`。v0.0.5 会优先使用 Chrome；如果没有安装 Chrome，会自动使用系统自带的 Microsoft Edge。
 5. 粘贴延河课堂课堂主页网址链接，例如 `https://www.yanhekt.cn/course/12345`。
 6. 点击“加载课程清单”，勾选要下载的课堂录屏，再点击“开始下载勾选项”。
 
@@ -95,7 +95,7 @@ START_YANHEKT_GUI.bat
 在窗口中：
 
 1. 输入课程列表链接，例如 `https://www.yanhekt.cn/course/12345`。
-2. 选择保存目录，默认是 `downloads/`。
+2. 选择保存目录，默认是用户下载文件夹下的 `YanhektDownloader`。
 3. 点击“加载课程清单”。
 4. 在表格中勾选要下载的课程，并预览每个文件的保存名称。
 5. 点击“下载勾选项”。下载成功后 GUI 会短暂停留提示完成，然后自动退出。
@@ -141,7 +141,7 @@ python yanhekt_downloader.py https://www.yanhekt.cn/course/12345
 常用参数：
 
 ```powershell
-python yanhekt_downloader.py 12345 -o downloads
+python yanhekt_downloader.py 12345 -o "$env:USERPROFILE\Downloads\YanhektDownloader"
 python yanhekt_downloader.py 12345 --dry-run
 python yanhekt_downloader.py 12345 --newest-first --limit 3
 python yanhekt_downloader.py 12345 --overwrite
@@ -155,7 +155,7 @@ python yanhekt_downloader.py 12345 --browser "C:\Program Files (x86)\Microsoft\E
 | 参数 | 说明 |
 | --- | --- |
 | `course_url` | 课程列表链接或课程 ID。省略时进入交互式输入。 |
-| `-o, --output` | 保存目录，默认是 `downloads/`。 |
+| `-o, --output` | 保存目录，默认是用户下载文件夹下的 `YanhektDownloader`。 |
 | `--dry-run` | 只列出将要下载的视频和文件名，不实际下载。 |
 | `--session-ids` | 只下载指定 session id，多个 id 用逗号或空格分隔。 |
 | `--newest-first` | 按最新课程优先下载。 |
@@ -186,9 +186,21 @@ python yanhekt_downloader.py 12345 --browser "C:\Program Files (x86)\Microsoft\E
 
 ## 故障排查
 
+### 安装包打不开或安装失败
+
+安装包是 PyInstaller 打包的普通 Windows 应用。少数电脑可能遇到 SmartScreen、杀毒软件或校园电脑策略拦截。请确认安装包来自本仓库 Releases 页面，并在系统允许的范围内放行。
+
+安装器会检查系统临时目录和安装目录所在磁盘的剩余空间。即使你安装到 D 盘，单文件安装包启动时仍会使用 Windows 临时目录；如果 C 盘或 `%TEMP%` 空间不足，请先清理临时目录后再安装。
+
 ### 双击 GUI 没反应
 
-先检查同目录是否生成了：
+安装版会把崩溃日志写到用户本地数据目录：
+
+```text
+%LOCALAPPDATA%\YanhektDownloader\yanhekt_gui_error.log
+```
+
+源码版也可以检查同目录是否生成了：
 
 ```text
 yanhekt_gui_error.log
@@ -200,6 +212,7 @@ yanhekt_gui_error.log
 - Python 启动器 `py` / `pyw` 不可用。
 - Tkinter 缺失。
 - 杀毒或系统策略拦截脚本启动。
+- 安装目录缺少 `YanhektDownloaderWorker.exe`，可能是安装包解压不完整或被杀毒软件隔离。
 
 也可以在命令行中运行：
 
@@ -212,6 +225,12 @@ python yanhekt_gui.py
 ### 下载时要求登录
 
 请在程序打开的独立 Chrome 或 Edge 窗口里登录 yanhekt/延河课堂。登录完成后不要关闭窗口，程序会继续等待并读取课程信息。
+
+### 保存目录不可用或磁盘空间不足
+
+默认保存到用户下载文件夹下的 `YanhektDownloader`。如果你手动选择了 Program Files、受 OneDrive 管控的目录、只读 U 盘或很深的多层目录，可能会被系统拒绝写入。请改到桌面、下载文件夹或其他可写且路径较短的位置。
+
+开启“下载前估算占用空间”时，程序会在下载前检查保存目录所在磁盘的剩余空间，并预留一定安全余量。空间不足时会提前停止，避免 ffmpeg 运行到一半才失败。
 
 ### ffmpeg 找不到
 
@@ -251,13 +270,13 @@ packaging\build_release.bat
 - 生成 Windows exe 版本元数据。
 - 使用 PyInstaller 构建 `YanhektDownloader.exe` 和 `YanhektDownloaderWorker.exe`。
 - 复制 `README.md`、`LICENSE`、`VERSION` 和 `ffmpeg.exe` 到安装 payload。
-- 生成最终安装包 `release\YanhektDownloader_Setup_v0.0.4.exe`。
+- 生成最终安装包 `release\YanhektDownloader_Setup_v当前版本.exe`。
 
 发布时建议创建 Git tag：
 
 ```powershell
-git tag v0.0.4
-git push origin v0.0.4
+git tag v0.0.5
+git push origin v0.0.5
 ```
 
 ## 仓库卫生

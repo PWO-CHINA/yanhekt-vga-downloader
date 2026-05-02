@@ -19,9 +19,12 @@ import uuid
 
 APP_NAME = "yanhekt-延河课堂录屏下载器"
 EXE_NAME = "YanhektDownloader.exe"
+WORKER_EXE_NAME = "YanhektDownloaderWorker.exe"
 APP_ICON_NAME = "yanhekt_downloader.ico"
 PAYLOAD_NAME = "release_payload.zip"
 LEGACY_SHORTCUT_NAMES = ["Yanhekt Downloader.lnk", "yanhekt 延河课堂录屏下载器.lnk"]
+REQUIRED_PAYLOAD_FILES = [EXE_NAME, WORKER_EXE_NAME, "ffmpeg.exe", "README.md", "LICENSE", "VERSION"]
+MIN_TEMP_FREE_BYTES = 350 * 1024 * 1024
 
 CLSID_SHELL_LINK = "00021401-0000-0000-C000-000000000046"
 IID_ISHELL_LINK_W = "000214F9-0000-0000-C000-000000000046"
@@ -67,6 +70,43 @@ def resource_path(name: str) -> Path:
     return base / name
 
 
+def format_bytes(value: int | float) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(value)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def payload_size() -> int:
+    payload = resource_path(PAYLOAD_NAME)
+    if not payload.exists():
+        return 0
+    return payload.stat().st_size
+
+
+def check_free_space(install_dir: Path) -> None:
+    payload_bytes = payload_size()
+    required_install = max(250 * 1024 * 1024, int(payload_bytes * 1.8))
+    temp_dir = Path(os.environ.get("TEMP") or os.environ.get("TMP") or str(Path.home()))
+    install_space_root = install_dir
+    while not install_space_root.exists() and install_space_root.parent != install_space_root:
+        install_space_root = install_space_root.parent
+    checks = [
+        (temp_dir, MIN_TEMP_FREE_BYTES, "系统临时目录"),
+        (install_space_root, required_install, "安装目录所在磁盘"),
+    ]
+    for path, required, label in checks:
+        try:
+            free = shutil.disk_usage(path).free
+        except OSError:
+            continue
+        if free < required:
+            raise OSError(f"{label}可用空间不足：至少需要 {format_bytes(required)}，当前可用 {format_bytes(free)}。")
+
+
 def ensure_safe_zip_target(base: Path, member: str) -> Path:
     target = (base / member).resolve()
     base_resolved = base.resolve()
@@ -90,6 +130,24 @@ def extract_payload(install_dir: Path, log: Callable[[str], None]) -> None:
             with archive.open(info) as source, target.open("wb") as dest:
                 shutil.copyfileobj(source, dest)
     log(f"已安装到：{install_dir}")
+
+
+def ensure_writable_install_dir(install_dir: Path) -> None:
+    install_dir.mkdir(parents=True, exist_ok=True)
+    probe = install_dir / ".yanhekt_install_write_test.tmp"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+    finally:
+        try:
+            probe.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def validate_installation(install_dir: Path) -> None:
+    missing = [name for name in REQUIRED_PAYLOAD_FILES if not (install_dir / name).exists()]
+    if missing:
+        raise FileNotFoundError("安装不完整，缺少文件：" + ", ".join(missing))
 
 
 def known_folder_path(folder_id: str) -> Path | None:
@@ -220,16 +278,32 @@ def create_desktop_shortcut(install_dir: Path, log: Callable[[str], None]) -> bo
 
 def launch_app(install_dir: Path) -> None:
     target = install_dir / EXE_NAME
-    if target.exists():
-        subprocess.Popen([str(target)], cwd=str(install_dir), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if not target.exists():
+        raise FileNotFoundError(f"找不到主程序：{target}")
+    try:
+        process = subprocess.Popen([str(target)], cwd=str(install_dir), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except OSError as exc:
+        raise OSError(f"安装完成，但启动主程序失败：{exc}") from exc
+    try:
+        return_code = process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        return
+    if return_code != 0:
+        raise RuntimeError(f"安装完成，但主程序启动后立即退出，退出代码：{return_code}")
 
 
-def install(install_dir: Path, shortcut: bool, launch: bool, log: Callable[[str], None]) -> None:
+def install(install_dir: Path, shortcut: bool, launch: bool, log: Callable[[str], None]) -> list[str]:
+    warnings: list[str] = []
+    check_free_space(install_dir)
+    ensure_writable_install_dir(install_dir)
     extract_payload(install_dir, log)
+    validate_installation(install_dir)
     if shortcut:
-        create_desktop_shortcut(install_dir, log)
+        if not create_desktop_shortcut(install_dir, log):
+            warnings.append(f"桌面快捷方式创建失败。主程序位置：{install_dir / EXE_NAME}")
     if launch:
         launch_app(install_dir)
+    return warnings
 
 
 class InstallerUi:
@@ -299,12 +373,16 @@ class InstallerUi:
         self.busy = True
         self.install_button.configure(state="disabled")
         try:
-            install(install_dir, self.shortcut_var.get(), self.launch_var.get(), self.log)
+            warnings = install(install_dir, self.shortcut_var.get(), self.launch_var.get(), self.log)
         except Exception as exc:
             messagebox.showerror("安装失败", str(exc))
             self.log(f"安装失败：{exc}")
         else:
-            messagebox.showinfo("安装完成", f"{APP_NAME} 已安装完成。")
+            if warnings:
+                message = f"{APP_NAME} 已安装完成，但有一个问题需要注意：\n\n" + "\n".join(warnings)
+                messagebox.showwarning("安装完成", message)
+            else:
+                messagebox.showinfo("安装完成", f"{APP_NAME} 已安装完成。")
         finally:
             self.busy = False
             self.install_button.configure(state="normal")
@@ -323,12 +401,14 @@ def main() -> int:
     args = parse_args()
     if args.silent:
         try:
-            install(
+            warnings = install(
                 Path(args.install_dir).expanduser(),
                 shortcut=not args.no_shortcut,
                 launch=not args.no_launch,
                 log=print,
             )
+            for warning in warnings:
+                print(f"Warning: {warning}", file=sys.stderr)
         except Exception as exc:
             print(f"Install failed: {exc}", file=sys.stderr)
             return 1

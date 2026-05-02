@@ -26,7 +26,7 @@ def app_dir() -> Path:
 
 
 SCRIPT_DIR = app_dir()
-DEFAULT_OUTPUT = SCRIPT_DIR / "downloads"
+DEFAULT_OUTPUT = downloader.default_output_dir()
 PLAN_PREFIX = downloader.PLAN_JSON_PREFIX
 CHECKED = "☑"
 UNCHECKED = "☐"
@@ -52,7 +52,37 @@ def downloader_command_base() -> list[str]:
     worker_exe = SCRIPT_DIR / "YanhektDownloaderWorker.exe"
     if getattr(sys, "frozen", False) and worker_exe.exists():
         return [str(worker_exe)]
+    if getattr(sys, "frozen", False):
+        raise FileNotFoundError(
+            "安装不完整：缺少 YanhektDownloaderWorker.exe。\n"
+            "请重新运行安装包，或检查杀毒软件是否隔离了该文件。"
+        )
     return [sys.executable, str(SCRIPT_DIR / "yanhekt_downloader.py")]
+
+
+def runtime_log_dir() -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    return base / "YanhektDownloader"
+
+
+def write_crash_log(text: str) -> Path:
+    targets = [
+        runtime_log_dir() / "yanhekt_gui_error.log",
+        Path(os.environ.get("TEMP", str(Path.home()))) / "yanhekt_gui_error.log",
+    ]
+    for path in targets:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            return path
+        except OSError:
+            continue
+    fallback = SCRIPT_DIR / "yanhekt_gui_error.log"
+    fallback.write_text(text, encoding="utf-8")
+    return fallback
 
 
 class YanhektGui:
@@ -78,6 +108,9 @@ class YanhektGui:
         self.plan_course_input = ""
         self.plan_output_dir = ""
         self.checkbox_images: list[tk.PhotoImage] = []
+        self.recent_lines: list[str] = []
+        self.error_dialog_shown = False
+        self.login_dialog_shown = False
 
         self.setup_styles()
         self._build_ui()
@@ -397,7 +430,11 @@ class YanhektGui:
 
     def open_output(self) -> None:
         output_dir = Path(self.output_var.get()).expanduser()
-        output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            downloader.ensure_writable_directory(output_dir)
+        except OSError as exc:
+            messagebox.showerror("保存目录不可用", f"无法打开或写入保存目录：\n{output_dir}\n\n{exc}")
+            return
         if os.name == "nt":
             os.startfile(output_dir)  # type: ignore[attr-defined]
         elif sys.platform == "darwin":
@@ -463,10 +500,18 @@ class YanhektGui:
         if self.validate_course() is None:
             return
         output_dir = Path(self.output_var.get().strip() or str(DEFAULT_OUTPUT)).expanduser()
-        output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            downloader.ensure_writable_directory(output_dir)
+        except OSError as exc:
+            messagebox.showerror("保存目录不可用", f"请换一个可以写入的保存目录。\n\n当前目录：\n{output_dir}\n\n{exc}")
+            self.status_var.set("保存目录不可用")
+            return
 
         self.progress_var.set(0.0)
         self.process_mode = mode
+        self.recent_lines = []
+        self.error_dialog_shown = False
+        self.login_dialog_shown = False
         self.status_var.set("正在加载课程清单" if mode == "plan" else "正在启动下载")
         self.set_running(True)
         self.append_log("\n=== 加载课程清单 ===\n" if mode == "plan" else "\n=== 开始下载勾选项 ===\n")
@@ -619,6 +664,7 @@ class YanhektGui:
             if kind == "line":
                 line = str(payload).replace("\r", "\n")
                 self.append_log(line)
+                self.remember_line(line)
                 self.update_status_from_line(line)
             elif kind == "plan":
                 self.render_plan(payload)  # type: ignore[arg-type]
@@ -641,7 +687,38 @@ class YanhektGui:
                 else:
                     self.status_var.set(f"已退出，代码 {code}")
                     self.append_log(f"=== 已退出，代码 {code} ===\n")
+                    self.show_failure_hint(code)
         self.root.after(100, self.poll_events)
+
+    def remember_line(self, line: str) -> None:
+        for part in line.splitlines():
+            cleaned = part.strip()
+            if cleaned:
+                self.recent_lines.append(cleaned)
+        self.recent_lines = self.recent_lines[-30:]
+
+    def failure_hint(self, code: int) -> str:
+        recent = "\n".join(self.recent_lines[-8:]) or f"进程退出代码：{code}"
+        text = "\n".join(self.recent_lines).lower()
+        if "chrome or microsoft edge not found" in text:
+            return "没有找到 Chrome 或 Microsoft Edge。请安装其中一个浏览器后重试。"
+        if "ffmpeg not found" in text:
+            return "没有找到 ffmpeg。安装版通常会自带 ffmpeg，请重新安装；源码版请把 ffmpeg 加入 PATH。"
+        if "login is missing or expired" in text or "not logged in" in text or "please log in" in text:
+            return "需要重新登录。请在程序打开的 Chrome/Edge 窗口中登录 yanhekt/延河课堂，登录后不要手动关闭窗口。"
+        if "保存目录不可用" in text or "磁盘空间不足" in text or "space" in text:
+            return "保存目录不可用或磁盘空间不足。请换到可写、剩余空间足够的文件夹。"
+        if "could not read course info" in text or "could not find course id" in text:
+            return "课程链接可能不对，或当前账号无权访问该课程。请填写课堂主页网址链接，例如 https://www.yanhekt.cn/course/12345。"
+        if "could not prepare the video url" in text:
+            return "无法准备视频地址。请保持程序打开的浏览器窗口处于登录状态，然后重试。"
+        return "任务没有完成。下面是最后几行日志，通常能说明原因：\n\n" + recent
+
+    def show_failure_hint(self, code: int) -> None:
+        if self.error_dialog_shown:
+            return
+        self.error_dialog_shown = True
+        messagebox.showerror("任务未完成", self.failure_hint(code))
 
     def update_status_from_line(self, line: str) -> None:
         match = re.search(r"downloading\s+([0-9.]+)%", line)
@@ -653,6 +730,11 @@ class YanhektGui:
             self.status_var.set("正在估算占用空间")
         elif "estimated size:" in line:
             self.status_var.set(line.strip())
+        elif "visible browser window is needed once for login" in line or "Please log in" in line:
+            self.status_var.set("请在打开的 Chrome/Edge 窗口中登录")
+            if not self.login_dialog_shown:
+                self.login_dialog_shown = True
+                messagebox.showinfo("需要登录", "请在刚打开的 Chrome/Edge 窗口中登录 yanhekt/延河课堂，登录后保持窗口打开，程序会继续。")
         elif line.startswith("[skip existing]"):
             self.status_var.set(line.strip())
         elif line.startswith("[") and "/" in line:
@@ -678,7 +760,11 @@ class YanhektGui:
 
     def repair_legacy(self) -> None:
         output_dir = Path(self.output_var.get().strip() or str(DEFAULT_OUTPUT)).expanduser()
-        output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            downloader.ensure_writable_directory(output_dir)
+        except OSError as exc:
+            messagebox.showerror("保存目录不可用", f"无法写入保存目录：\n{output_dir}\n\n{exc}")
+            return
         planned_paths = [Path(str(item.get("output_path"))) for item in self.plan_items if item.get("output_path")]
         renamed = downloader.repair_legacy_mp_extensions(output_dir, planned_paths)
         if not renamed:
@@ -739,8 +825,7 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception:
-        log_path = SCRIPT_DIR / "yanhekt_gui_error.log"
-        log_path.write_text(traceback.format_exc(), encoding="utf-8")
+        log_path = write_crash_log(traceback.format_exc())
         try:
             messagebox.showerror("GUI 启动失败", f"错误日志已保存到：\n{log_path}")
         except Exception:
