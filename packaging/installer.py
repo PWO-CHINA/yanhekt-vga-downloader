@@ -150,6 +150,46 @@ def validate_installation(install_dir: Path) -> None:
         raise FileNotFoundError("安装不完整，缺少文件：" + ", ".join(missing))
 
 
+def ensure_app_not_running(install_dir: Path) -> None:
+    if os.name != "nt":
+        return
+    exe_paths = [
+        str((install_dir / EXE_NAME).resolve()).lower(),
+        str((install_dir / WORKER_EXE_NAME).resolve()).lower(),
+    ]
+    existing = [path for path in exe_paths if Path(path).exists()]
+    if not existing:
+        return
+    try:
+        output = subprocess.check_output(
+            [
+                "wmic",
+                "process",
+                "where",
+                "(name='YanhektDownloader.exe' or name='YanhektDownloaderWorker.exe')",
+                "get",
+                "ExecutablePath",
+                "/value",
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        return
+    running_paths = []
+    for line in output.splitlines():
+        if not line.lower().startswith("executablepath="):
+            continue
+        value = line.split("=", 1)[1].strip().lower()
+        if value in existing:
+            running_paths.append(value)
+    if running_paths:
+        raise RuntimeError("检测到旧版程序仍在运行。请先关闭 yanhekt/延河课堂录屏下载器和正在下载的任务，再重新安装。")
+
+
 def known_folder_path(folder_id: str) -> Path | None:
     if os.name != "nt":
         return None
@@ -296,6 +336,7 @@ def install(install_dir: Path, shortcut: bool, launch: bool, log: Callable[[str]
     warnings: list[str] = []
     check_free_space(install_dir)
     ensure_writable_install_dir(install_dir)
+    ensure_app_not_running(install_dir)
     extract_payload(install_dir, log)
     validate_installation(install_dir)
     if shortcut:

@@ -295,7 +295,7 @@ class FilenameTests(unittest.TestCase):
         playlist = "https://cvideo.yanhekt.cn/vod/x/VGA.m3u8?Xvideo_Token=tok&Xclient_Signature=sig"
         text = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\nVGA0.ts\n"
 
-        rewritten, urls = downloader.rewrite_playlist_text(playlist, text)
+        rewritten, urls, resources = downloader.rewrite_playlist_text(playlist, text)
 
         self.assertIn(
             'URI="https://cvideo.yanhekt.cn/vod/x/key.bin?Xvideo_Token=tok&Xclient_Signature=sig"',
@@ -308,6 +308,36 @@ class FilenameTests(unittest.TestCase):
         self.assertEqual(
             urls,
             ["https://cvideo.yanhekt.cn/vod/x/VGA0.ts?Xvideo_Token=tok&Xclient_Signature=sig"],
+        )
+        self.assertEqual(
+            resources,
+            ["https://cvideo.yanhekt.cn/vod/x/key.bin?Xvideo_Token=tok&Xclient_Signature=sig"],
+        )
+
+    def test_rewrite_playlist_text_rewrites_map_without_treating_it_as_segment(self) -> None:
+        playlist = "https://cvideo.yanhekt.cn/vod/x/VGA.m3u8?Xvideo_Token=tok"
+        text = '#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:10,\nVGA0.ts\n'
+
+        rewritten, urls, resources = downloader.rewrite_playlist_text(playlist, text)
+
+        self.assertIn('URI="https://cvideo.yanhekt.cn/vod/x/init.mp4?Xvideo_Token=tok"', rewritten)
+        self.assertEqual(urls, ["https://cvideo.yanhekt.cn/vod/x/VGA0.ts?Xvideo_Token=tok"])
+        self.assertEqual(resources, ["https://cvideo.yanhekt.cn/vod/x/init.mp4?Xvideo_Token=tok"])
+
+    def test_choose_nested_playlist_prefers_video_variant(self) -> None:
+        playlist = "https://cvideo.yanhekt.cn/master.m3u8?Xvideo_Token=tok"
+        text = (
+            '#EXTM3U\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=256000,CODECS="mp4a.40.2"\n'
+            'audio.m3u8\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2"\n'
+            'video720.m3u8\n'
+        )
+        urls = downloader.parse_playlist_urls(playlist, text)
+
+        self.assertEqual(
+            downloader.choose_nested_playlist(urls, text, playlist),
+            "https://cvideo.yanhekt.cn/video720.m3u8?Xvideo_Token=tok",
         )
 
     def test_redact_media_urls_in_text_hides_signed_query_values(self) -> None:
@@ -363,6 +393,33 @@ class FilenameTests(unittest.TestCase):
             with self.assertRaises(downloader.MediaAccessError):
                 downloader.prepare_ffmpeg_hls_input(playlist, "https://www.yanhekt.cn/session/1", Path(tmp))
 
+    def test_estimate_hls_size_uses_selected_video_variant(self) -> None:
+        master = "https://cvideo.yanhekt.cn/master.m3u8?Xvideo_Token=tok"
+        video = "https://cvideo.yanhekt.cn/video720.m3u8?Xvideo_Token=tok"
+
+        def fake_read(url: str, referer: str) -> str:
+            if url == master:
+                return (
+                    '#EXTM3U\n'
+                    '#EXT-X-STREAM-INF:BANDWIDTH=256000,CODECS="mp4a.40.2"\n'
+                    'audio.m3u8\n'
+                    '#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2"\n'
+                    'video720.m3u8\n'
+                )
+            self.assertEqual(url, video)
+            return "#EXTM3U\n#EXTINF:10,\nVGA0.ts\n#EXTINF:10,\nVGA1.ts\n"
+
+        with mock.patch.object(downloader, "read_text_url", side_effect=fake_read), mock.patch.object(
+            downloader,
+            "content_length",
+            return_value=100,
+        ) as length:
+            estimated, segments = downloader.estimate_hls_size(master, "https://www.yanhekt.cn/session/1")
+
+        self.assertEqual(estimated, 200)
+        self.assertEqual(segments, 2)
+        length.assert_any_call("https://cvideo.yanhekt.cn/VGA0.ts?Xvideo_Token=tok", "https://www.yanhekt.cn/session/1")
+
     def test_chrome_launch_args_can_run_headless(self) -> None:
         args = downloader.chrome_launch_args(
             "chrome.exe",
@@ -396,7 +453,15 @@ class FilenameTests(unittest.TestCase):
                 self.assertEqual(downloader.find_ffmpeg(None), str(ffmpeg))
 
     def test_find_ffmpeg_accepts_explicit_path(self) -> None:
-        self.assertEqual(downloader.find_ffmpeg("C:/tools/ffmpeg.exe"), str(Path("C:/tools/ffmpeg.exe")))
+        with tempfile.TemporaryDirectory() as tmp:
+            ffmpeg = Path(tmp) / "ffmpeg.exe"
+            ffmpeg.write_text("fake", encoding="utf-8")
+            self.assertEqual(downloader.find_ffmpeg(str(ffmpeg)), str(ffmpeg))
+
+    def test_find_ffmpeg_rejects_missing_explicit_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(FileNotFoundError, "ffmpeg not found at"):
+                downloader.find_ffmpeg(str(Path(tmp) / "missing.exe"))
 
     def test_find_browser_prefers_chrome_when_both_are_installed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -610,6 +675,27 @@ class InstallerTests(unittest.TestCase):
 
             self.assertEqual(len(warnings), 1)
             self.assertIn("桌面快捷方式创建失败", warnings[0])
+
+    def test_install_checks_for_running_app_before_extract(self) -> None:
+        installer = load_installer_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            install_dir = Path(tmp) / "Install"
+            logs: list[str] = []
+            with mock.patch.object(installer, "check_free_space"), mock.patch.object(
+                installer,
+                "ensure_writable_install_dir",
+            ), mock.patch.object(
+                installer,
+                "ensure_app_not_running",
+                side_effect=RuntimeError("still running"),
+            ), mock.patch.object(
+                installer,
+                "extract_payload",
+            ) as extract:
+                with self.assertRaisesRegex(RuntimeError, "still running"):
+                    installer.install(install_dir, shortcut=False, launch=False, log=logs.append)
+
+            extract.assert_not_called()
 
     def test_launch_app_missing_exe_is_explicit_error(self) -> None:
         installer = load_installer_module()

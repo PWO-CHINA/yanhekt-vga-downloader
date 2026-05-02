@@ -24,6 +24,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -51,6 +52,8 @@ WINDOWS_RESERVED_NAMES = {
 MAX_WINDOWS_PATH_CHARS = 240
 MIN_FREE_SPACE_RESERVE = 500 * 1024 * 1024
 CDP_PROBE_TIMEOUT = 2
+FFMPEG_STALL_TIMEOUT = 90.0
+SIGNED_URL_RETRIES = 2
 
 
 def configure_standard_streams() -> None:
@@ -780,7 +783,10 @@ def ensure_enough_free_space(output_dir: Path, expected_size: int | None) -> Non
 
 def find_ffmpeg(user_path: str | None) -> str:
     if user_path:
-        return str(Path(user_path))
+        path = Path(user_path).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"ffmpeg not found at: {path}")
+        return str(path)
     for root in resource_dirs():
         bundled = root / "ffmpeg.exe"
         if bundled.exists():
@@ -1072,12 +1078,7 @@ def with_playlist_query(playlist_url: str, segment_url: str) -> str:
 
 
 def parse_playlist_urls(playlist_url: str, playlist_text: str) -> list[str]:
-    urls = []
-    for raw_line in playlist_text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        urls.append(with_playlist_query(playlist_url, line))
+    _rewritten_text, urls, _resources = rewrite_playlist_text(playlist_url, playlist_text)
     return urls
 
 
@@ -1122,29 +1123,43 @@ def redact_media_urls_in_text(text: str) -> str:
     return re.sub(r"https?://[^\s'\"<>]+", replace, text)
 
 
+def parse_hls_attributes(value: str) -> dict[str, str]:
+    attrs: dict[str, str] = {}
+    for match in re.finditer(r'([A-Z0-9-]+)=((?:"[^"]*")|[^,]*)', value):
+        raw = match.group(2)
+        attrs[match.group(1).upper()] = raw[1:-1] if raw.startswith('"') and raw.endswith('"') else raw
+    return attrs
+
+
 def rewrite_hls_uri_attributes(line: str, playlist_url: str) -> str:
     def replace(match: re.Match[str]) -> str:
-        return f'URI="{with_playlist_query(playlist_url, match.group(1))}"'
+        rewritten = with_playlist_query(playlist_url, match.group(1))
+        return f'URI="{rewritten}"'
 
     return re.sub(r'URI="([^"]+)"', replace, line)
 
 
-def rewrite_playlist_text(playlist_url: str, playlist_text: str) -> tuple[str, list[str]]:
+def rewrite_playlist_text(playlist_url: str, playlist_text: str) -> tuple[str, list[str], list[str]]:
     rewritten_lines: list[str] = []
-    media_urls: list[str] = []
+    playlist_urls: list[str] = []
+    resource_urls: list[str] = []
     for raw_line in playlist_text.splitlines():
         line = raw_line.strip()
         if not line:
             rewritten_lines.append(raw_line)
             continue
         if line.startswith("#"):
-            rewritten_lines.append(rewrite_hls_uri_attributes(raw_line, playlist_url))
+            rewritten = rewrite_hls_uri_attributes(raw_line, playlist_url)
+            rewritten_lines.append(rewritten)
+            if "URI=" in line and not line.startswith("#EXT-X-STREAM-INF"):
+                for match in re.finditer(r'URI="([^"]+)"', line):
+                    resource_urls.append(with_playlist_query(playlist_url, match.group(1)))
             continue
         rewritten = with_playlist_query(playlist_url, line)
         rewritten_lines.append(rewritten)
-        media_urls.append(rewritten)
+        playlist_urls.append(rewritten)
     trailing_newline = "\n" if playlist_text.endswith(("\n", "\r")) else ""
-    return "\n".join(rewritten_lines) + trailing_newline, media_urls
+    return "\n".join(rewritten_lines) + trailing_newline, playlist_urls, resource_urls
 
 
 def fetch_bytes_range(url: str, referer: str, length: int = 188) -> tuple[bytes, str]:
@@ -1226,16 +1241,65 @@ def read_playlist_text_checked(url: str, referer: str, label: str) -> str:
     return playlist_text
 
 
+def stream_variant_score(stream_inf: str) -> tuple[int, int, int]:
+    attrs = parse_hls_attributes(stream_inf)
+    codecs = attrs.get("CODECS", "").lower()
+    resolution = attrs.get("RESOLUTION", "")
+    bandwidth = int(attrs.get("BANDWIDTH", "0") or 0)
+    has_video_codec = any(codec in codecs for codec in ("avc1", "hev1", "hvc1", "vp09", "av01"))
+    has_resolution = bool(re.fullmatch(r"\d+x\d+", resolution))
+    if codecs and not has_video_codec and "mp4a" in codecs and not has_resolution:
+        video_score = 0
+    else:
+        video_score = 2 if has_video_codec else (1 if has_resolution else 0)
+    pixels = 0
+    if has_resolution:
+        width, height = (int(part) for part in resolution.lower().split("x", 1))
+        pixels = width * height
+    return video_score, pixels, bandwidth
+
+
+def choose_nested_playlist(urls: list[str], playlist_text: str, playlist_url: str) -> str | None:
+    nested = [url for url in urls if is_hls_playlist_url(url)]
+    if not nested:
+        return None
+    if len(nested) == 1:
+        return nested[0]
+
+    ranked: list[tuple[tuple[int, int, int], str]] = []
+    lines = playlist_text.splitlines()
+    for index, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        if not line.startswith("#EXT-X-STREAM-INF:"):
+            continue
+        score = stream_variant_score(line.split(":", 1)[1])
+        for candidate in lines[index + 1:]:
+            candidate = candidate.strip()
+            if not candidate or candidate.startswith("#"):
+                continue
+            resolved = with_playlist_query(playlist_url, candidate)
+            if is_hls_playlist_url(resolved):
+                ranked.append((score, resolved))
+            break
+    if ranked:
+        return max(ranked, key=lambda item: item[0])[1]
+    return nested[0]
+
+
+def is_segment_url(url: str) -> bool:
+    path = urllib.parse.urlparse(url).path.lower()
+    return bool(path) and not path.endswith((".m3u8", ".key", ".bin"))
+
+
 def prepare_ffmpeg_hls_input(signed_url: str, referer: str, work_dir: Path) -> Path:
     playlist_text = read_playlist_text_checked(signed_url, referer, "视频清单")
-    rewritten_text, media_urls = rewrite_playlist_text(signed_url, playlist_text)
-    nested_playlists = [url for url in media_urls if is_hls_playlist_url(url)]
-    if nested_playlists and len(nested_playlists) == len(media_urls):
-        nested_url = nested_playlists[0]
+    rewritten_text, playlist_urls, _resource_urls = rewrite_playlist_text(signed_url, playlist_text)
+    nested_url = choose_nested_playlist(playlist_urls, playlist_text, signed_url)
+    if nested_url is not None:
         playlist_text = read_playlist_text_checked(nested_url, referer, "子视频清单")
-        rewritten_text, media_urls = rewrite_playlist_text(nested_url, playlist_text)
+        rewritten_text, playlist_urls, _resource_urls = rewrite_playlist_text(nested_url, playlist_text)
 
-    segments = [url for url in media_urls if not is_hls_playlist_url(url)]
+    segments = [url for url in playlist_urls if is_segment_url(url)]
     if not segments:
         raise MediaAccessError("视频清单里没有找到可下载的视频分片。")
 
@@ -1295,8 +1359,9 @@ def estimate_hls_size(
 ) -> tuple[int | None, int]:
     playlist_text = read_text_url(signed_url, referer)
     urls = parse_playlist_urls(signed_url, playlist_text)
-    if urls and all(".m3u8" in urllib.parse.urlparse(url).path.lower() for url in urls):
-        signed_url = urls[0]
+    nested_url = choose_nested_playlist(urls, playlist_text, signed_url)
+    if nested_url is not None:
+        signed_url = nested_url
         playlist_text = read_text_url(signed_url, referer)
         urls = parse_playlist_urls(signed_url, playlist_text)
 
@@ -1399,6 +1464,14 @@ def run_ffmpeg(
         "pipe:1",
         "-protocol_whitelist",
         "file,http,https,tcp,tls,crypto",
+        "-rw_timeout",
+        "30000000",
+        "-reconnect",
+        "1",
+        "-reconnect_streamed",
+        "1",
+        "-reconnect_delay_max",
+        "10",
         "-user_agent",
         USER_AGENT,
         "-referer",
@@ -1427,6 +1500,18 @@ def run_ffmpeg(
         creationflags=no_window_creationflags(),
     )
     start_time = time.time()
+    last_output_time = [start_time]
+    stalled = [False]
+
+    def watchdog() -> None:
+        while process.poll() is None:
+            if time.time() - last_output_time[0] > FFMPEG_STALL_TIMEOUT:
+                stalled[0] = True
+                terminate_process(process)
+                return
+            time.sleep(5)
+
+    threading.Thread(target=watchdog, daemon=True).start()
     current_time: float | None = None
     current_size: int | None = None
     speed = ""
@@ -1435,6 +1520,7 @@ def run_ffmpeg(
         line = raw_line.strip()
         if not line:
             continue
+        last_output_time[0] = time.time()
         if "=" not in line:
             ffmpeg_messages.append(redact_media_urls_in_text(line))
             ffmpeg_messages = ffmpeg_messages[-30:]
@@ -1466,6 +1552,9 @@ def run_ffmpeg(
             progress_lines=progress_lines,
         )
 
+    if stalled[0]:
+        raise subprocess.TimeoutExpired(cmd, FFMPEG_STALL_TIMEOUT)
+
     return_code = process.wait()
     if temp.exists():
         current_size = temp.stat().st_size
@@ -1487,6 +1576,11 @@ def run_ffmpeg(
     if output.exists() and overwrite:
         output.unlink()
     temp.replace(output)
+    if not is_probably_complete_mp4(output):
+        raise MediaAccessError(
+            f"ffmpeg 已退出但生成的文件不是完整 mp4：{output.name}\n"
+            "请重新下载；如果多次出现，请换一个保存目录或检查磁盘/杀毒软件是否拦截写入。"
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1673,9 +1767,9 @@ def main() -> int:
             wait_for_page_ready(cdp_client, session_id=attached_session_id, timeout=timeout)
             return cdp_client, attached_session_id
         except CdpError:
-            if launched_proc is None:
+            if args.no_launch:
                 raise
-            if launched_headless:
+            if launched_headless or launched_proc is None:
                 try:
                     cdp_client.close()
                 except Exception:
@@ -1857,27 +1951,63 @@ def main() -> int:
                         return 2
                     log(f"  estimated size: unknown ({exc})")
 
-            try:
-                with tempfile.TemporaryDirectory(prefix="yanhekt-hls-") as tmp:
-                    log("  validating video access...")
-                    ffmpeg_input = prepare_ffmpeg_hls_input(signed_url, referer, Path(tmp))
-                    run_ffmpeg(
-                        ffmpeg,
-                        str(ffmpeg_input),
-                        output,
-                        referer,
-                        args.overwrite,
-                        duration,
-                        expected_size,
-                        f"  downloading",
-                        progress_lines=args.progress_lines,
+            last_error: Exception | None = None
+            for attempt in range(1, SIGNED_URL_RETRIES + 1):
+                if attempt > 1:
+                    log("  retrying with a fresh video URL...")
+                    try:
+                        signed_url = sign_recording_url(item, str(info["user_badge"]))
+                    except CdpError as exc:
+                        last_error = exc
+                        break
+                try:
+                    with tempfile.TemporaryDirectory(prefix="yanhekt-hls-") as tmp:
+                        log("  validating video access...")
+                        ffmpeg_input = prepare_ffmpeg_hls_input(signed_url, referer, Path(tmp))
+                        run_ffmpeg(
+                            ffmpeg,
+                            str(ffmpeg_input),
+                            output,
+                            referer,
+                            args.overwrite,
+                            duration,
+                            expected_size,
+                            f"  downloading",
+                            progress_lines=args.progress_lines,
+                        )
+                    last_error = None
+                    break
+                except MediaAccessError as exc:
+                    last_error = exc
+                    if attempt >= SIGNED_URL_RETRIES:
+                        break
+                    log(f"  download attempt failed, will retry once: {exc}")
+                except subprocess.TimeoutExpired as exc:
+                    last_error = exc
+                    if attempt >= SIGNED_URL_RETRIES:
+                        break
+                    log("  ffmpeg made no progress for too long; retrying once...")
+                except subprocess.CalledProcessError as exc:
+                    last_error = exc
+                    if attempt >= SIGNED_URL_RETRIES:
+                        break
+                    log(f"  ffmpeg exited with {exc.returncode}; retrying once with a fresh URL...")
+            if last_error is not None:
+                if isinstance(last_error, MediaAccessError):
+                    log(f"[failed] {output.name}: {last_error}", err=True)
+                    return 2
+                if isinstance(last_error, subprocess.TimeoutExpired):
+                    log(
+                        f"[failed] {output.name}: ffmpeg had no progress for {int(FFMPEG_STALL_TIMEOUT)} seconds. "
+                        "Please retry on a stable network.",
+                        err=True,
                     )
-            except MediaAccessError as exc:
-                log(f"[failed] {output.name}: {exc}", err=True)
+                    return 2
+                if isinstance(last_error, subprocess.CalledProcessError):
+                    log(f"[failed] {output.name}: ffmpeg exited with {last_error.returncode}", err=True)
+                    return last_error.returncode or 1
+                log(f"[failed] {output.name}: {last_error}", err=True)
                 return 2
-            except subprocess.CalledProcessError as exc:
-                log(f"[failed] {output.name}: ffmpeg exited with {exc.returncode}", err=True)
-                return exc.returncode or 1
             log(f"  saved: {output} ({format_bytes(output.stat().st_size)})")
         log("Done.")
         return 0

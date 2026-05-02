@@ -650,9 +650,10 @@ class YanhektGui:
             self.set_checked(str(item.get("session_id")), False)
 
     def read_process_output(self) -> None:
-        assert self.process is not None
-        if self.process.stdout is not None:
-            for line in self.process.stdout:
+        proc = self.process
+        assert proc is not None
+        if proc.stdout is not None:
+            for line in proc.stdout:
                 if line.startswith(PLAN_PREFIX):
                     try:
                         self.events.put(("plan", json.loads(line[len(PLAN_PREFIX):])))
@@ -660,7 +661,7 @@ class YanhektGui:
                         self.events.put(("line", f"课程清单解析失败：{exc}\n"))
                     continue
                 self.events.put(("line", line))
-        return_code = self.process.wait()
+        return_code = proc.wait()
         self.events.put(("done", return_code))
 
     def poll_events(self) -> None:
@@ -725,6 +726,16 @@ class YanhektGui:
             return "课程链接可能不对，或当前账号无权访问该课程。请填写课堂主页网址链接，例如 https://www.yanhekt.cn/course/12345。"
         if "could not prepare the video url" in text:
             return "无法准备视频地址。请保持程序打开的浏览器窗口处于登录状态，然后重试。"
+        if "browser exited early" in text or "timed out waiting for dedicated browser" in text:
+            return (
+                "浏览器没有正常启动。请确认 Chrome 或 Edge 可以正常打开；如果电脑有校园/企业策略、杀毒软件或安全管家，"
+                "请允许本工具启动专用浏览器窗口后重试。\n\n"
+                + recent
+            )
+        if "no progress for" in text or "made no progress" in text:
+            return "下载长时间没有进展，通常是网络或代理/安全软件拦截视频分片。请换一个稳定网络后重试。\n\n" + recent
+        if "not a complete mp4" in text or "不是完整 mp4" in text:
+            return "ffmpeg 已退出，但生成的文件不是完整 mp4。请换一个保存目录，或检查磁盘/杀毒软件是否拦截写入。\n\n" + recent
         if "视频分片没有返回有效媒体数据" in text or "视频清单没有返回 hls 内容" in text or "读取第一个视频分片失败" in text:
             return (
                 "视频分片没有返回有效媒体数据。常见原因是电脑时间不准、当前网络/CDN 拦截、登录状态过期，"
@@ -759,6 +770,8 @@ class YanhektGui:
             self.status_var.set(line.strip())
         elif "validating video access" in line:
             self.status_var.set("正在检查视频分片访问")
+        elif "retrying with a fresh video URL" in line or "retrying once" in line:
+            self.status_var.set("正在重试下载")
         elif "visible browser window is needed once for login" in line or "Please log in" in line:
             self.status_var.set("请在打开的 Chrome/Edge 窗口中登录")
             if not self.login_dialog_shown:
