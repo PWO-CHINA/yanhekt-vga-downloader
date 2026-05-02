@@ -56,12 +56,12 @@ ffmpeg 可以放在以下任一位置：
 
 ## 快速开始
 
-### 使用安装版 v0.0.5
+### 使用安装版 v0.0.6
 
 从 Releases 下载：
 
 ```text
-YanhektDownloader_Setup_v0.0.5.exe
+YanhektDownloader_Setup_v0.0.6.exe
 ```
 
 双击安装包后：
@@ -69,7 +69,7 @@ YanhektDownloader_Setup_v0.0.5.exe
 1. 选择安装文件夹，默认建议为当前用户目录下的 `Programs\YanhektDownloader`。
 2. 保持“创建桌面快捷方式”勾选，桌面会创建 `yanhekt-延河课堂录屏下载器`。
 3. 点击“安装”。
-4. 安装完成后打开 `yanhekt-延河课堂录屏下载器`。v0.0.5 会优先使用 Chrome；如果没有安装 Chrome，会自动使用系统自带的 Microsoft Edge。
+4. 安装完成后打开 `yanhekt-延河课堂录屏下载器`。v0.0.6 会优先使用 Chrome；如果没有安装 Chrome，会自动使用系统自带的 Microsoft Edge。
 5. 粘贴延河课堂课堂主页网址链接，例如 `https://www.yanhekt.cn/course/12345`。
 6. 点击“加载课程清单”，勾选要下载的课堂录屏，再点击“开始下载勾选项”。
 
@@ -275,8 +275,8 @@ packaging\build_release.bat
 发布时建议创建 Git tag：
 
 ```powershell
-git tag v0.0.5
-git push origin v0.0.5
+git tag v0.0.6
+git push origin v0.0.6
 ```
 
 ## 仓库卫生

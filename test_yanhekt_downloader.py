@@ -197,8 +197,27 @@ class FilenameTests(unittest.TestCase):
             profile.mkdir(parents=True)
             (profile / "DevToolsActivePort").write_text("45678\n/devtools/browser/test\n", encoding="utf-8")
 
-            with mock.patch.dict(downloader.os.environ, {"LOCALAPPDATA": str(Path(tmp) / "LocalAppData")}, clear=True):
+            with mock.patch.dict(downloader.os.environ, {"LOCALAPPDATA": str(Path(tmp) / "LocalAppData")}, clear=True), mock.patch.object(
+                downloader,
+                "http_json",
+                return_value={"webSocketDebuggerUrl": "ws://127.0.0.1:45678/devtools/browser/test"},
+            ):
                 self.assertEqual(downloader.discover_cdp_base(None, profile), "http://127.0.0.1:45678")
+
+    def test_discover_cdp_base_ignores_and_cleans_stale_dedicated_profile_port(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "YanhektDownloader" / "chrome-profile"
+            profile.mkdir(parents=True)
+            port_file = profile / "DevToolsActivePort"
+            port_file.write_text("45678\n/devtools/browser/test\n", encoding="utf-8")
+
+            with mock.patch.dict(downloader.os.environ, {"LOCALAPPDATA": str(Path(tmp) / "LocalAppData")}, clear=True), mock.patch.object(
+                downloader,
+                "http_json",
+                side_effect=TimeoutError("stale port"),
+            ):
+                self.assertEqual(downloader.discover_cdp_base(None, profile), downloader.DEFAULT_CDP)
+                self.assertFalse(port_file.exists())
 
     def test_discover_cdp_base_does_not_scan_main_edge_profile_port(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -276,6 +295,8 @@ class FilenameTests(unittest.TestCase):
         )
 
         self.assertNotIn("--headless=new", args)
+        self.assertIn("--test-type", args)
+        self.assertIn("--disable-infobars", args)
         self.assertEqual(args[-1], "https://www.yanhekt.cn/course/12345")
 
     def test_find_ffmpeg_prefers_bundled_resource(self) -> None:
@@ -527,6 +548,21 @@ class GuiCompletionTests(unittest.TestCase):
         def destroy(self) -> None:
             pass
 
+    class FakeProgress:
+        def __init__(self) -> None:
+            self.started = False
+            self.options: dict[str, object] = {}
+
+        def start(self, interval: int) -> None:
+            self.started = True
+            self.options["interval"] = interval
+
+        def stop(self) -> None:
+            self.started = False
+
+        def configure(self, **kwargs: object) -> None:
+            self.options.update(kwargs)
+
     def poll_done(self, mode: str, code: int):
         gui = yanhekt_gui.YanhektGui.__new__(yanhekt_gui.YanhektGui)
         gui.events = queue.Queue()
@@ -537,6 +573,7 @@ class GuiCompletionTests(unittest.TestCase):
         gui.progress_var = self.FakeVar()
         gui.status_var = self.FakeVar()
         gui.root = self.FakeRoot()
+        gui.progress = self.FakeProgress()
         gui.set_running = mock.Mock()
         gui.append_log = mock.Mock()
         gui.recent_lines = []

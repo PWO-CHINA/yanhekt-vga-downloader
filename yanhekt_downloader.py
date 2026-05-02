@@ -48,14 +48,19 @@ WINDOWS_RESERVED_NAMES = {
 }
 MAX_WINDOWS_PATH_CHARS = 240
 MIN_FREE_SPACE_RESERVE = 500 * 1024 * 1024
+CDP_PROBE_TIMEOUT = 2
 
 
 def configure_standard_streams() -> None:
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True, write_through=True)
         except Exception:
             pass
+
+
+def log(message: str = "", *, err: bool = False) -> None:
+    print(message, file=sys.stderr if err else sys.stdout, flush=True)
 
 
 def app_dir() -> Path:
@@ -314,9 +319,9 @@ class CdpClient:
         self.ws.close()
 
 
-def http_json(url: str, method: str = "GET") -> Any:
+def http_json(url: str, method: str = "GET", timeout: float = 10) -> Any:
     req = urllib.request.Request(url, method=method)
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -344,7 +349,19 @@ def discover_cdp_base(user_base: str | None, profile_dir: Path | None = None) ->
     if profile_dir is not None:
         port = read_devtools_port(profile_dir)
         if port:
-            return f"http://127.0.0.1:{port}"
+            cdp_base = f"http://127.0.0.1:{port}"
+            try:
+                http_json(cdp_base + "/json/version", timeout=CDP_PROBE_TIMEOUT)
+                return cdp_base
+            except Exception:
+                if is_managed_profile_dir(profile_dir):
+                    try:
+                        (profile_dir / "DevToolsActivePort").unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        pass
+                pass
     return DEFAULT_CDP
 
 
@@ -409,6 +426,8 @@ def chrome_launch_args(chrome_path: str, profile_dir: Path, url: str, headless: 
         "--remote-allow-origins=http://127.0.0.1",
         "--no-first-run",
         "--no-default-browser-check",
+        "--test-type",
+        "--disable-infobars",
     ]
     if headless:
         args.extend(
@@ -467,7 +486,7 @@ def open_tab(cdp_base: str, url: str) -> dict[str, Any]:
 
 def browser_ws_url(cdp_base: str) -> str:
     try:
-        version = http_json(cdp_base + "/json/version")
+        version = http_json(cdp_base + "/json/version", timeout=CDP_PROBE_TIMEOUT)
         ws_url = version.get("webSocketDebuggerUrl")
         if ws_url:
             return ws_url
@@ -1431,11 +1450,11 @@ def main() -> int:
     def relaunch_dedicated_chrome(reason: str, visible_for_login: bool = False) -> None:
         if args.no_launch:
             raise CdpError(reason)
-        print(reason)
+        log(reason)
         if args.background_browser and not visible_for_login:
-            print("Opening a background browser session and continuing...")
+            log("Opening a background browser session and continuing...")
         else:
-            print("Reopening the dedicated browser window and continuing...")
+            log("Reopening the dedicated browser window and continuing...")
         stop_launched_for_reconnect()
         launch_chrome(headless=args.background_browser and not visible_for_login)
 
@@ -1471,8 +1490,8 @@ def main() -> int:
                     visible_for_login=True,
                 )
                 cdp_client, attached_session_id, _target = connect_yanhe_session(cdp_base, course_url)
-            print("Please log in to yanhekt/延河课堂 (yanhekt.cn) in the browser window that just opened.")
-            print(f"Waiting up to {args.login_timeout} seconds...")
+            log("Please log in to yanhekt/延河课堂 (yanhekt.cn) in the browser window that just opened.")
+            log(f"Waiting up to {args.login_timeout} seconds...")
             wait_for_page_ready(
                 cdp_client,
                 session_id=attached_session_id,
@@ -1522,27 +1541,28 @@ def main() -> int:
         cdp, session_id, _target = connect_yanhe_session(cdp_base, course_url)
     except Exception as exc:
         if args.no_launch:
-            print(f"Could not connect to Chromium DevTools at {cdp_base}: {exc}", file=sys.stderr)
-            print("Open Chrome or Edge with a logged-in yanhekt.cn page, then retry.", file=sys.stderr)
+            log(f"Could not connect to Chromium DevTools at {cdp_base}: {exc}", err=True)
+            log("Open Chrome or Edge with a logged-in yanhekt.cn page, then retry.", err=True)
             return 2
-        print("Current Chromium DevTools endpoint is not usable from this script.")
+        log("Current Chromium DevTools endpoint is not usable from this script.")
         if args.background_browser:
-            print("Launching a background browser session for yanhekt/延河课堂 downloads...")
+            log("Launching a background browser session for yanhekt/延河课堂 downloads...")
         else:
-            print("Launching a dedicated local browser profile for yanhekt/延河课堂 downloads...")
+            log("Launching a dedicated local browser profile for yanhekt/延河课堂 downloads...")
         try:
             launch_chrome(headless=args.background_browser)
             cdp, session_id, _target = connect_yanhe_session(cdp_base, course_url)
         except Exception as launch_exc:
-            print(f"Could not launch/connect to dedicated browser: {launch_exc}", file=sys.stderr)
+            log(f"Could not launch/connect to dedicated browser: {launch_exc}", err=True)
             cleanup_launched()
             return 2
 
     try:
+        log("Reading yanhekt/延河课堂 course list from the logged-in browser...")
         cdp, session_id = wait_ready_or_login(cdp, session_id, timeout=10)
         info = cdp.evaluate(course_info_expression(course_url), timeout=90, session_id=session_id)
     except Exception as exc:
-        print(f"Could not read course info from yanhekt.cn: {exc}", file=sys.stderr)
+        log(f"Could not read course info from yanhekt.cn: {exc}", err=True)
         cleanup_launched()
         return 2
     finally:
@@ -1559,14 +1579,14 @@ def main() -> int:
         output_dir = Path(args.output).expanduser().resolve()
         ensure_writable_directory(output_dir)
     except OSError as exc:
-        print(f"保存目录不可用：{exc}", file=sys.stderr)
+        log(f"保存目录不可用：{exc}", err=True)
         cleanup_launched()
         return 2
     planned = build_download_plan(items, output_dir)
     session_ids = parse_session_ids(args.session_ids)
     selected_planned = filter_plan_by_session_ids(planned, session_ids)
     if session_ids and not selected_planned:
-        print("No matching session ids were found in this course plan.", file=sys.stderr)
+        log("No matching session ids were found in this course plan.", err=True)
         cleanup_launched()
         return 2
     if args.plan_json:
@@ -1580,41 +1600,43 @@ def main() -> int:
     if not args.dry_run and not args.no_repair_legacy_names:
         renamed = repair_legacy_mp_extensions(output_dir, [output for _, output in planned])
         if renamed:
-            print(f"Repaired legacy .mp_ files: {len(renamed)}")
+            log(f"Repaired legacy .mp_ files: {len(renamed)}")
             for old, new in renamed:
-                print(f"  renamed: {old.name} -> {new.name}")
+                log(f"  renamed: {old.name} -> {new.name}")
 
-    print(f"Course: {info.get('course_name')} ({info.get('course_id')})")
-    print(f"Found classroom recordings: {len(items)}")
-    print(f"Output: {output_dir}")
+    log(f"Course: {info.get('course_name')} ({info.get('course_id')})")
+    log(f"Found classroom recordings: {len(items)}")
+    log(f"Output: {output_dir}")
 
     if args.dry_run:
         for _, output in planned:
-            print(f"[dry-run] {output.name}")
+            log(f"[dry-run] {output.name}")
         cleanup_launched()
         return 0
 
     ffmpeg = find_ffmpeg(args.ffmpeg)
     try:
         total_count = len(planned)
+        log(f"Selected classroom recordings: {total_count}")
         for item_index, (item, output) in enumerate(planned, start=1):
             if output.exists() and not args.overwrite:
                 size = output.stat().st_size if output.is_file() else 0
                 if size > 0 and is_probably_complete_mp4(output):
-                    print(f"[skip existing] {output.name} ({format_bytes(size)})")
+                    log(f"[skip existing] {output.name} ({format_bytes(size)})")
                     continue
-                print(f"[replace invalid] {output.name}")
+                log(f"[replace invalid] {output.name}")
             duration = parse_duration(item.get("duration"))
-            print(f"[{item_index}/{total_count}] {output.name}")
+            log(f"[{item_index}/{total_count}] {output.name}")
             try:
+                log("  preparing video URL from the logged-in browser...")
                 signed_url = sign_recording_url(item, str(info["user_badge"]))
             except CdpError as exc:
-                print(f"[failed] {output.name}: {exc}", file=sys.stderr)
+                log(f"[failed] {output.name}: {exc}", err=True)
                 return 2
 
             expected_size = None
             if not args.no_size_estimate:
-                print("  estimating disk usage...")
+                log("  estimating disk usage...")
                 try:
                     expected_size, segment_count = estimate_hls_size(
                         signed_url,
@@ -1627,16 +1649,16 @@ def main() -> int:
                         if args.size_sample_segments <= 0
                         else f"{min(args.size_sample_segments, segment_count)} segment sample"
                     )
-                    print(
+                    log(
                         f"  estimated size: ~{format_bytes(expected_size)} "
                         f"({segment_count} segments, {sample_note})"
                     )
                     ensure_enough_free_space(output_dir, expected_size)
                 except Exception as exc:
                     if isinstance(exc, InsufficientSpaceError):
-                        print(f"[failed] {output.name}: {exc}", file=sys.stderr)
+                        log(f"[failed] {output.name}: {exc}", err=True)
                         return 2
-                    print(f"  estimated size: unknown ({exc})")
+                    log(f"  estimated size: unknown ({exc})")
 
             try:
                 run_ffmpeg(
@@ -1651,10 +1673,10 @@ def main() -> int:
                     progress_lines=args.progress_lines,
                 )
             except subprocess.CalledProcessError as exc:
-                print(f"[failed] {output.name}: ffmpeg exited with {exc.returncode}", file=sys.stderr)
+                log(f"[failed] {output.name}: ffmpeg exited with {exc.returncode}", err=True)
                 return exc.returncode or 1
-            print(f"  saved: {output} ({format_bytes(output.stat().st_size)})")
-        print("Done.")
+            log(f"  saved: {output} ({format_bytes(output.stat().st_size)})")
+        log("Done.")
         return 0
     finally:
         cleanup_launched()

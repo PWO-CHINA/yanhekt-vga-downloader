@@ -111,6 +111,7 @@ class YanhektGui:
         self.recent_lines: list[str] = []
         self.error_dialog_shown = False
         self.login_dialog_shown = False
+        self.busy_tick = 0
 
         self.setup_styles()
         self._build_ui()
@@ -467,6 +468,12 @@ class YanhektGui:
         self.repair_button.configure(state=normal)
         self.stop_button.configure(state="normal" if running else "disabled")
         self.set_plan_controls_enabled(bool(self.plan_items) and not running)
+        if running:
+            self.progress.configure(mode="indeterminate")
+            self.progress.start(12)
+        else:
+            self.progress.stop()
+            self.progress.configure(mode="determinate")
 
     def set_plan_controls_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
@@ -512,6 +519,7 @@ class YanhektGui:
         self.recent_lines = []
         self.error_dialog_shown = False
         self.login_dialog_shown = False
+        self.busy_tick = 0
         self.status_var.set("正在加载课程清单" if mode == "plan" else "正在启动下载")
         self.set_running(True)
         self.append_log("\n=== 加载课程清单 ===\n" if mode == "plan" else "\n=== 开始下载勾选项 ===\n")
@@ -688,6 +696,11 @@ class YanhektGui:
                     self.status_var.set(f"已退出，代码 {code}")
                     self.append_log(f"=== 已退出，代码 {code} ===\n")
                     self.show_failure_hint(code)
+        if self.process is not None and not self.recent_lines:
+            self.busy_tick += 1
+            if self.busy_tick in {30, 100, 200}:
+                self.status_var.set("正在连接浏览器，请稍等")
+                self.append_log("[status] 正在连接浏览器，请稍等...\n")
         self.root.after(100, self.poll_events)
 
     def remember_line(self, line: str) -> None:
@@ -723,9 +736,17 @@ class YanhektGui:
     def update_status_from_line(self, line: str) -> None:
         match = re.search(r"downloading\s+([0-9.]+)%", line)
         if match:
+            self.progress.stop()
+            self.progress.configure(mode="determinate")
             self.progress_var.set(float(match.group(1)))
             self.status_var.set(line.strip())
             return
+        if "Reading yanhekt/延河课堂 course list" in line:
+            self.status_var.set("正在读取课程清单")
+        elif "Selected classroom recordings:" in line:
+            self.status_var.set(line.strip())
+        elif "preparing video URL" in line:
+            self.status_var.set("正在准备视频地址")
         if "estimating disk usage" in line:
             self.status_var.set("正在估算占用空间")
         elif "estimated size:" in line:
