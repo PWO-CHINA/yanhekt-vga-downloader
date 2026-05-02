@@ -112,6 +112,7 @@ class YanhektGui:
         self.error_dialog_shown = False
         self.login_dialog_shown = False
         self.busy_tick = 0
+        self.task_log_path: Path | None = None
 
         self.setup_styles()
         self._build_ui()
@@ -446,6 +447,23 @@ class YanhektGui:
     def append_log(self, text: str) -> None:
         self.log_text.insert("end", text)
         self.log_text.see("end")
+        if self.task_log_path is not None:
+            try:
+                self.task_log_path.parent.mkdir(parents=True, exist_ok=True)
+                with self.task_log_path.open("a", encoding="utf-8", errors="replace") as handle:
+                    handle.write(text)
+            except OSError:
+                self.task_log_path = None
+
+    def new_task_log_path(self, mode: str) -> Path:
+        stamp = __import__("datetime").datetime.now().strftime("%Y%m%d-%H%M%S")
+        return runtime_log_dir() / "logs" / f"yanhekt_{mode}_{stamp}.log"
+
+    def log_location_text(self) -> str:
+        task_log_path = getattr(self, "task_log_path", None)
+        if task_log_path is None:
+            return ""
+        return f"\n\n完整日志：\n{task_log_path}"
 
     def validate_course(self) -> str | None:
         course = self.course_var.get().strip()
@@ -520,9 +538,11 @@ class YanhektGui:
         self.error_dialog_shown = False
         self.login_dialog_shown = False
         self.busy_tick = 0
+        self.task_log_path = self.new_task_log_path(mode)
         self.status_var.set("正在加载课程清单" if mode == "plan" else "正在启动下载")
         self.set_running(True)
         self.append_log("\n=== 加载课程清单 ===\n" if mode == "plan" else "\n=== 开始下载勾选项 ===\n")
+        self.append_log(f"日志文件：{self.task_log_path}\n")
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
@@ -715,34 +735,36 @@ class YanhektGui:
         recent = "\n".join(self.recent_lines[-8:]) or f"进程退出代码：{code}"
         text = "\n".join(self.recent_lines).lower()
         if "chrome or microsoft edge not found" in text:
-            return "没有找到 Chrome 或 Microsoft Edge。请安装其中一个浏览器后重试。"
+            return "没有找到 Chrome 或 Microsoft Edge。请安装其中一个浏览器后重试。" + self.log_location_text()
         if "ffmpeg not found" in text:
-            return "没有找到 ffmpeg。安装版通常会自带 ffmpeg，请重新安装；源码版请把 ffmpeg 加入 PATH。"
+            return "没有找到 ffmpeg。安装版通常会自带 ffmpeg，请重新安装；源码版请把 ffmpeg 加入 PATH。" + self.log_location_text()
         if "login is missing or expired" in text or "not logged in" in text or "please log in" in text:
-            return "需要重新登录。请在程序打开的 Chrome/Edge 窗口中登录 yanhekt/延河课堂，登录后不要手动关闭窗口。"
+            return "需要重新登录。请在程序打开的 Chrome/Edge 窗口中登录 yanhekt/延河课堂，登录后不要手动关闭窗口。" + self.log_location_text()
         if "保存目录不可用" in text or "磁盘空间不足" in text or "space" in text:
-            return "保存目录不可用或磁盘空间不足。请换到可写、剩余空间足够的文件夹。"
+            return "保存目录不可用或磁盘空间不足。请换到可写、剩余空间足够的文件夹。" + self.log_location_text()
         if "could not read course info" in text or "could not find course id" in text:
-            return "课程链接可能不对，或当前账号无权访问该课程。请填写课堂主页网址链接，例如 https://www.yanhekt.cn/course/12345。"
+            return "课程链接可能不对，或当前账号无权访问该课程。请填写课堂主页网址链接，例如 https://www.yanhekt.cn/course/12345。" + self.log_location_text()
         if "could not prepare the video url" in text:
-            return "无法准备视频地址。请保持程序打开的浏览器窗口处于登录状态，然后重试。"
+            return "无法准备视频地址。请保持程序打开的浏览器窗口处于登录状态，然后重试。" + self.log_location_text()
         if "browser exited early" in text or "timed out waiting for dedicated browser" in text:
             return (
                 "浏览器没有正常启动。请确认 Chrome 或 Edge 可以正常打开；如果电脑有校园/企业策略、杀毒软件或安全管家，"
                 "请允许本工具启动专用浏览器窗口后重试。\n\n"
                 + recent
+                + self.log_location_text()
             )
         if "no progress for" in text or "made no progress" in text:
-            return "下载长时间没有进展，通常是网络或代理/安全软件拦截视频分片。请换一个稳定网络后重试。\n\n" + recent
+            return "下载长时间没有进展，通常是网络或代理/安全软件拦截视频分片。请换一个稳定网络后重试。\n\n" + recent + self.log_location_text()
         if "not a complete mp4" in text or "不是完整 mp4" in text:
-            return "ffmpeg 已退出，但生成的文件不是完整 mp4。请换一个保存目录，或检查磁盘/杀毒软件是否拦截写入。\n\n" + recent
+            return "ffmpeg 已退出，但生成的文件不是完整 mp4。请换一个保存目录，或检查磁盘/杀毒软件是否拦截写入。\n\n" + recent + self.log_location_text()
         if "视频分片没有返回有效媒体数据" in text or "视频清单没有返回 hls 内容" in text or "读取第一个视频分片失败" in text:
             return (
                 "视频分片没有返回有效媒体数据。常见原因是电脑时间不准、当前网络/CDN 拦截、登录状态过期，"
                 "或账号无权访问这节课。\n\n"
                 + recent
+                + self.log_location_text()
             )
-        return "任务没有完成。下面是最后几行日志，通常能说明原因：\n\n" + recent
+        return "任务没有完成。下面是最后几行日志，通常能说明原因：\n\n" + recent + self.log_location_text()
 
     def show_failure_hint(self, code: int) -> None:
         if self.error_dialog_shown:

@@ -781,6 +781,16 @@ class GuiCompletionTests(unittest.TestCase):
         self.assertEqual(gui.status_var.value, "已退出，代码 2")
         self.assertFalse(self.has_destroy_callback(gui))
 
+    def test_failure_hint_includes_task_log_path(self) -> None:
+        gui = yanhekt_gui.YanhektGui.__new__(yanhekt_gui.YanhektGui)
+        gui.recent_lines = ["ffmpeg made no progress for too long"]
+        gui.task_log_path = Path("C:/Users/test/AppData/Local/YanhektDownloader/logs/task.log")
+
+        hint = yanhekt_gui.YanhektGui.failure_hint(gui, 2)
+
+        self.assertIn("完整日志", hint)
+        self.assertIn("task.log", hint)
+
 
 class ProcessCleanupTests(unittest.TestCase):
     class FakeProcess:
