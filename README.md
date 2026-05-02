@@ -56,12 +56,12 @@ ffmpeg 可以放在以下任一位置：
 
 ## 快速开始
 
-### 使用安装版 v0.0.9
+### 使用安装版 v0.0.10
 
 从 Releases 下载：
 
 ```text
-YanhektDownloader_Setup_v0.0.9.exe
+YanhektDownloader_Setup_v0.0.10.exe
 ```
 
 双击安装包后：
@@ -69,7 +69,7 @@ YanhektDownloader_Setup_v0.0.9.exe
 1. 选择安装文件夹，默认建议为当前用户目录下的 `Programs\YanhektDownloader`。
 2. 保持“创建桌面快捷方式”勾选，桌面会创建 `yanhekt-延河课堂录屏下载器`。
 3. 点击“安装”。
-4. 安装完成后打开 `yanhekt-延河课堂录屏下载器`。v0.0.9 会优先使用 Chrome；如果没有安装 Chrome，会自动使用系统自带的 Microsoft Edge。
+4. 安装完成后打开 `yanhekt-延河课堂录屏下载器`。v0.0.10 会优先使用 Chrome；如果没有安装 Chrome，会自动使用系统自带的 Microsoft Edge。
 5. 粘贴延河课堂课堂主页网址链接，例如 `https://www.yanhekt.cn/course/12345`。
 6. 点击“加载课程清单”，勾选要下载的课堂录屏，再点击“开始下载勾选项”。
 
@@ -228,7 +228,9 @@ python yanhekt_gui.py
 
 ### 下载到第一个分片时报 Invalid data
 
-v0.0.9 会在调用 ffmpeg 前先检查 HLS 清单和第一个视频分片，并把清单里的相对分片地址改写为带签名参数的完整地址。这样可以避免部分电脑、网络或 CDN 节点在 ffmpeg 请求未签名 `.ts` 分片时返回错误页，导致 `Invalid data found when processing input`。
+v0.0.10 会在调用 ffmpeg 前先检查 HLS 清单和第一个视频分片，并把清单里的相对分片地址改写为带签名参数的完整地址。这样可以避免部分电脑、网络或 CDN 节点在 ffmpeg 请求未签名 `.ts` 分片时返回错误页，导致 `Invalid data found when processing input`。
+
+v0.0.10 还会把本工具专用 Chrome/Edge 登录会话里的浏览器 `User-Agent` 和媒体域 Cookie 临时传给 ffmpeg。它们只在当前下载进程内使用，不写入日志，不保存到本项目配置文件。这样可以减少“课程清单能加载，但同学电脑下载分片失败”的情况。
 
 如果仍然提示“视频分片没有返回有效媒体数据”，请优先检查：
 
@@ -296,8 +298,8 @@ packaging\build_release.bat
 发布时建议创建 Git tag：
 
 ```powershell
-git tag v0.0.9
-git push origin v0.0.9
+git tag v0.0.10
+git push origin v0.0.10
 ```
 
 ## 仓库卫生

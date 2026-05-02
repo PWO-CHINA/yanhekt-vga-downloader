@@ -29,6 +29,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -159,6 +160,13 @@ class InsufficientSpaceError(OSError):
 
 class MediaAccessError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class MediaRequestContext:
+    referer: str
+    user_agent: str = USER_AGENT
+    cookie_header: str = ""
 
 
 class SimpleWebSocket:
@@ -558,6 +566,73 @@ def connect_yanhe_session(cdp_base: str, course_url: str) -> tuple[CdpClient, st
     return browser, session_id, target
 
 
+def normalize_media_context(value: Any, fallback_referer: str) -> MediaRequestContext:
+    if not isinstance(value, dict):
+        return MediaRequestContext(referer=fallback_referer)
+    referer = str(value.get("referer") or fallback_referer)
+    user_agent = str(value.get("user_agent") or value.get("userAgent") or USER_AGENT)
+    cookie_header = str(value.get("cookie_header") or value.get("cookieHeader") or "")
+    return MediaRequestContext(referer=referer, user_agent=user_agent, cookie_header=cookie_header)
+
+
+def merge_cookie_headers(*headers: str) -> str:
+    merged: dict[str, str] = {}
+    for header in headers:
+        for part in header.split(";"):
+            trimmed = part.strip()
+            if not trimmed or "=" not in trimmed:
+                continue
+            name, value = trimmed.split("=", 1)
+            if name:
+                merged[name] = value
+    return "; ".join(f"{name}={value}" for name, value in merged.items())
+
+
+def media_cookie_urls(signed_url: str) -> list[str]:
+    urls = [
+        "https://www.yanhekt.cn/",
+        "https://yanhekt.cn/",
+        "https://cbiz.yanhekt.cn/",
+    ]
+    try:
+        parsed = urllib.parse.urlparse(signed_url)
+    except ValueError:
+        parsed = urllib.parse.ParseResult("", "", "", "", "", "")
+    if parsed.scheme and parsed.netloc:
+        urls.append(f"{parsed.scheme}://{parsed.netloc}/")
+        urls.append(signed_url)
+    unique: list[str] = []
+    seen: set[str] = set()
+    for url in urls:
+        if url not in seen:
+            unique.append(url)
+            seen.add(url)
+    return unique
+
+
+def cookie_header_from_browser(
+    cdp: CdpClient,
+    signed_url: str,
+    session_id: str | None = None,
+) -> str:
+    try:
+        result = cdp.call("Network.getCookies", {"urls": media_cookie_urls(signed_url)}, session_id=session_id)
+    except Exception:
+        return ""
+    cookies = result.get("cookies", [])
+    if not isinstance(cookies, list):
+        return ""
+    values: dict[str, str] = {}
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        name = str(cookie.get("name") or "")
+        value = str(cookie.get("value") or "")
+        if name:
+            values[name] = value
+    return "; ".join(f"{name}={value}" for name, value in values.items())
+
+
 def js_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -670,6 +745,52 @@ def sign_url_expression(raw_url: str, user_badge: str) -> str:
     Platform: "yhkt_user"
   }});
   return signer.p(rawUrl) + "?" + query.toString();
+}})()
+"""
+
+
+def media_context_expression(preferred_referer: str, signed_url: str) -> str:
+    return f"""
+(async () => {{
+  const preferredReferer = {js_string(preferred_referer)};
+  const signedUrl = {js_string(signed_url)};
+  const mediaHost = (() => {{
+    try {{ return new URL(signedUrl).hostname; }} catch (_err) {{ return ""; }}
+  }})();
+  const referer = preferredReferer || location.href;
+  const userAgent = navigator.userAgent || {js_string(USER_AGENT)};
+  const cookieUrls = [
+    "https://www.yanhekt.cn/",
+    "https://yanhekt.cn/",
+    "https://cbiz.yanhekt.cn/"
+  ];
+  if (mediaHost) cookieUrls.push("https://" + mediaHost + "/");
+  const byName = new Map();
+  if (document.cookie) {{
+    for (const part of document.cookie.split(";")) {{
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      const index = trimmed.indexOf("=");
+      const name = index >= 0 ? trimmed.slice(0, index) : trimmed;
+      byName.set(name, trimmed);
+    }}
+  }}
+  if (typeof chrome !== "undefined" && chrome.cookies && chrome.cookies.getAll) {{
+    for (const url of cookieUrls) {{
+      try {{
+        const cookies = await chrome.cookies.getAll({{ url }});
+        for (const cookie of cookies || []) {{
+          if (!cookie || !cookie.name) continue;
+          byName.set(cookie.name, cookie.name + "=" + cookie.value);
+        }}
+      }} catch (_err) {{}}
+    }}
+  }}
+  return {{
+    referer,
+    user_agent: userAgent,
+    cookie_header: Array.from(byName.values()).join("; ")
+  }};
 }})()
 """
 
@@ -1023,27 +1144,47 @@ def parse_duration(value: Any) -> float | None:
         return None
 
 
-def ffmpeg_headers(referer: str) -> str:
-    return "".join(f"{key}: {value}\r\n" for key, value in video_request_headers(referer).items())
+def media_context(
+    context_or_referer: MediaRequestContext | str,
+    user_agent: str | None = None,
+    cookie_header: str = "",
+) -> MediaRequestContext:
+    if isinstance(context_or_referer, MediaRequestContext):
+        return context_or_referer
+    return MediaRequestContext(
+        referer=context_or_referer,
+        user_agent=user_agent or USER_AGENT,
+        cookie_header=cookie_header,
+    )
 
 
-def video_request_headers(referer: str, extra: dict[str, str] | None = None) -> dict[str, str]:
+def ffmpeg_headers(context_or_referer: MediaRequestContext | str) -> str:
+    return "".join(f"{key}: {value}\r\n" for key, value in video_request_headers(context_or_referer).items())
+
+
+def video_request_headers(
+    context_or_referer: MediaRequestContext | str,
+    extra: dict[str, str] | None = None,
+) -> dict[str, str]:
+    context = media_context(context_or_referer)
     headers = {
-        "User-Agent": USER_AGENT,
-        "Referer": referer,
+        "User-Agent": context.user_agent or USER_AGENT,
+        "Referer": context.referer,
         "Origin": "https://www.yanhekt.cn",
         "Accept": "*/*",
         "Sec-Fetch-Site": "cross-site",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
     }
+    if context.cookie_header:
+        headers["Cookie"] = context.cookie_header
     if extra:
         headers.update(extra)
     return headers
 
 
-def read_text_url(url: str, referer: str) -> str:
-    req = urllib.request.Request(url, headers=video_request_headers(referer))
+def read_text_url(url: str, context_or_referer: MediaRequestContext | str) -> str:
+    req = urllib.request.Request(url, headers=video_request_headers(context_or_referer))
     with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.read().decode("utf-8", "replace")
 
@@ -1162,10 +1303,10 @@ def rewrite_playlist_text(playlist_url: str, playlist_text: str) -> tuple[str, l
     return "\n".join(rewritten_lines) + trailing_newline, playlist_urls, resource_urls
 
 
-def fetch_bytes_range(url: str, referer: str, length: int = 188) -> tuple[bytes, str]:
+def fetch_bytes_range(url: str, context_or_referer: MediaRequestContext | str, length: int = 188) -> tuple[bytes, str]:
     req = urllib.request.Request(
         url,
-        headers=video_request_headers(referer, {"Range": f"bytes=0-{max(0, length - 1)}"}),
+        headers=video_request_headers(context_or_referer, {"Range": f"bytes=0-{max(0, length - 1)}"}),
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -1213,9 +1354,9 @@ def media_access_error(url: str, content_type: str, data: bytes) -> MediaAccessE
     return MediaAccessError("\n".join(details))
 
 
-def read_playlist_text_checked(url: str, referer: str, label: str) -> str:
+def read_playlist_text_checked(url: str, context_or_referer: MediaRequestContext | str, label: str) -> str:
     try:
-        playlist_text = read_text_url(url, referer)
+        playlist_text = read_text_url(url, context_or_referer)
     except urllib.error.HTTPError as exc:
         data = exc.read(160)
         raise MediaAccessError(
@@ -1291,41 +1432,50 @@ def is_segment_url(url: str) -> bool:
     return bool(path) and not path.endswith((".m3u8", ".key", ".bin"))
 
 
-def prepare_ffmpeg_hls_input(signed_url: str, referer: str, work_dir: Path) -> Path:
-    playlist_text = read_playlist_text_checked(signed_url, referer, "视频清单")
+def prepare_ffmpeg_hls_input(
+    signed_url: str,
+    context_or_referer: MediaRequestContext | str,
+    work_dir: Path,
+) -> Path:
+    context = media_context(context_or_referer)
+    playlist_text = read_playlist_text_checked(signed_url, context, "视频清单")
     rewritten_text, playlist_urls, _resource_urls = rewrite_playlist_text(signed_url, playlist_text)
     nested_url = choose_nested_playlist(playlist_urls, playlist_text, signed_url)
     if nested_url is not None:
-        playlist_text = read_playlist_text_checked(nested_url, referer, "子视频清单")
+        playlist_text = read_playlist_text_checked(nested_url, context, "子视频清单")
         rewritten_text, playlist_urls, _resource_urls = rewrite_playlist_text(nested_url, playlist_text)
 
     segments = [url for url in playlist_urls if is_segment_url(url)]
     if not segments:
         raise MediaAccessError("视频清单里没有找到可下载的视频分片。")
 
+    _rewritten_text, _playlist_urls, resource_urls = rewrite_playlist_text(nested_url or signed_url, playlist_text)
+    media_probes = list(resource_urls) + [segments[0]]
     first_segment = segments[0]
-    try:
-        data, content_type = fetch_bytes_range(first_segment, referer)
-    except MediaAccessError:
-        raise
-    except Exception as exc:
-        raise MediaAccessError(
-            "读取第一个视频分片失败。\n"
-            f"分片地址：{redact_media_url(first_segment)}\n"
-            f"错误：{exc}\n"
-            "常见原因：电脑时间不准、当前网络/CDN 拦截了视频分片，或登录状态过期。"
-        ) from exc
-    if not looks_like_media_segment(data, content_type):
-        raise media_access_error(first_segment, content_type, data)
+    for probe_url in media_probes:
+        label = "视频初始化/密钥资源" if probe_url != first_segment else "第一个视频分片"
+        try:
+            data, content_type = fetch_bytes_range(probe_url, context)
+        except MediaAccessError:
+            raise
+        except Exception as exc:
+            raise MediaAccessError(
+                f"ffmpeg 启动前的媒体验证失败：读取{label}失败。\n"
+                f"资源地址：{redact_media_url(probe_url)}\n"
+                f"错误：{exc}\n"
+                "常见原因：电脑时间不准、当前网络/CDN 拦截了视频分片，或登录状态过期。"
+            ) from exc
+        if probe_url == first_segment and not looks_like_media_segment(data, content_type):
+            raise media_access_error(first_segment, content_type, data)
 
     playlist_path = work_dir / "yanhekt_signed_input.m3u8"
     playlist_path.write_text(rewritten_text, encoding="utf-8", newline="\n")
     return playlist_path
 
 
-def content_length(url: str, referer: str) -> int | None:
+def content_length(url: str, context_or_referer: MediaRequestContext | str) -> int | None:
     try:
-        req = urllib.request.Request(url, method="HEAD", headers=video_request_headers(referer))
+        req = urllib.request.Request(url, method="HEAD", headers=video_request_headers(context_or_referer))
         with urllib.request.urlopen(req, timeout=20) as resp:
             length = resp.headers.get("Content-Length")
             if length and length.isdigit():
@@ -1336,7 +1486,7 @@ def content_length(url: str, referer: str) -> int | None:
     try:
         req = urllib.request.Request(
             url,
-            headers=video_request_headers(referer, {"Range": "bytes=0-0"}),
+            headers=video_request_headers(context_or_referer, {"Range": "bytes=0-0"}),
         )
         with urllib.request.urlopen(req, timeout=20) as resp:
             content_range = resp.headers.get("Content-Range", "")
@@ -1353,16 +1503,17 @@ def content_length(url: str, referer: str) -> int | None:
 
 def estimate_hls_size(
     signed_url: str,
-    referer: str,
+    context_or_referer: MediaRequestContext | str,
     sample_segments: int = 24,
     workers: int = 8,
 ) -> tuple[int | None, int]:
-    playlist_text = read_text_url(signed_url, referer)
+    context = media_context(context_or_referer)
+    playlist_text = read_text_url(signed_url, context)
     urls = parse_playlist_urls(signed_url, playlist_text)
     nested_url = choose_nested_playlist(urls, playlist_text, signed_url)
     if nested_url is not None:
         signed_url = nested_url
-        playlist_text = read_text_url(signed_url, referer)
+        playlist_text = read_text_url(signed_url, context)
         urls = parse_playlist_urls(signed_url, playlist_text)
 
     segments = [
@@ -1380,7 +1531,7 @@ def estimate_hls_size(
         sample = segments[::step][:sample_segments]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        sizes = list(executor.map(lambda url: content_length(url, referer), sample))
+        sizes = list(executor.map(lambda url: content_length(url, context), sample))
     known_sizes = [size for size in sizes if size is not None and size > 0]
     if not known_sizes:
         return None, len(segments)
@@ -1441,13 +1592,14 @@ def run_ffmpeg(
     ffmpeg: str,
     signed_url: str,
     output: Path,
-    referer: str,
+    context_or_referer: MediaRequestContext | str,
     overwrite: bool,
     duration: float | None,
     expected_size: int | None,
     progress_prefix: str,
     progress_lines: bool = False,
 ) -> None:
+    context = media_context(context_or_referer)
     temp = output.with_suffix(output.suffix + ".part")
     if temp.exists():
         temp.unlink()
@@ -1473,11 +1625,11 @@ def run_ffmpeg(
         "-reconnect_delay_max",
         "10",
         "-user_agent",
-        USER_AGENT,
+        context.user_agent or USER_AGENT,
         "-referer",
-        referer,
+        context.referer,
         "-headers",
-        ffmpeg_headers(referer),
+        ffmpeg_headers(context),
         "-i",
         signed_url,
         "-c",
@@ -1515,6 +1667,7 @@ def run_ffmpeg(
     current_time: float | None = None
     current_size: int | None = None
     speed = ""
+    last_progress_print_time = [0.0]
     assert process.stdout is not None
     for raw_line in process.stdout:
         line = raw_line.strip()
@@ -1539,18 +1692,21 @@ def run_ffmpeg(
         elif key == "progress" and value == "end":
             break
 
+        now = time.time()
         if current_size is None and temp.exists():
             current_size = temp.stat().st_size
-        print_progress_line(
-            progress_prefix,
-            current_time,
-            duration,
-            current_size,
-            expected_size,
-            speed,
-            start_time,
-            progress_lines=progress_lines,
-        )
+        if progress_lines or now - last_progress_print_time[0] >= 0.8:
+            last_progress_print_time[0] = now
+            print_progress_line(
+                progress_prefix,
+                current_time,
+                duration,
+                current_size,
+                expected_size,
+                speed,
+                start_time,
+                progress_lines=progress_lines,
+            )
 
     if stalled[0]:
         raise subprocess.TimeoutExpired(cmd, FFMPEG_STALL_TIMEOUT)
@@ -1789,8 +1945,9 @@ def main() -> int:
             )
             return cdp_client, attached_session_id
 
-    def sign_recording_url(item: dict[str, Any], user_badge: str) -> str:
+    def sign_recording_url(item: dict[str, Any], user_badge: str) -> tuple[str, MediaRequestContext]:
         last_error: Exception | None = None
+        fallback_referer = item.get("session_url") or course_url
         for attempt in range(2):
             cdp_client: CdpClient | None = None
             try:
@@ -1801,7 +1958,21 @@ def main() -> int:
                     timeout=30,
                     session_id=attached_session_id,
                 )
-                return str(signed)
+                signed_url = str(signed)
+                context = cdp_client.evaluate(
+                    media_context_expression(str(fallback_referer), signed_url),
+                    timeout=15,
+                    session_id=attached_session_id,
+                )
+                media_ctx = normalize_media_context(context, str(fallback_referer))
+                cdp_cookie_header = cookie_header_from_browser(cdp_client, signed_url, attached_session_id)
+                if cdp_cookie_header:
+                    media_ctx = MediaRequestContext(
+                        referer=media_ctx.referer,
+                        user_agent=media_ctx.user_agent,
+                        cookie_header=merge_cookie_headers(media_ctx.cookie_header, cdp_cookie_header),
+                    )
+                return signed_url, media_ctx
             except Exception as exc:
                 last_error = exc
                 if attempt == 0 and not args.no_launch:
@@ -1917,21 +2088,21 @@ def main() -> int:
                 log(f"[replace invalid] {output.name}")
             duration = parse_duration(item.get("duration"))
             log(f"[{item_index}/{total_count}] {output.name}")
+            referer = item.get("session_url") or course_url
             try:
                 log("  preparing video URL from the logged-in browser...")
-                signed_url = sign_recording_url(item, str(info["user_badge"]))
+                signed_url, media_ctx = sign_recording_url(item, str(info["user_badge"]))
             except CdpError as exc:
                 log(f"[failed] {output.name}: {exc}", err=True)
                 return 2
 
-            referer = item.get("session_url") or course_url
             expected_size = None
             if not args.no_size_estimate:
                 log("  estimating disk usage...")
                 try:
                     expected_size, segment_count = estimate_hls_size(
                         signed_url,
-                        referer,
+                        media_ctx,
                         sample_segments=args.size_sample_segments,
                         workers=args.size_workers,
                     )
@@ -1956,19 +2127,25 @@ def main() -> int:
                 if attempt > 1:
                     log("  retrying with a fresh video URL...")
                     try:
-                        signed_url = sign_recording_url(item, str(info["user_badge"]))
+                        signed_url, media_ctx = sign_recording_url(item, str(info["user_badge"]))
+                    except CdpError as exc:
+                        last_error = exc
+                        break
+                elif not args.no_size_estimate:
+                    try:
+                        signed_url, media_ctx = sign_recording_url(item, str(info["user_badge"]))
                     except CdpError as exc:
                         last_error = exc
                         break
                 try:
                     with tempfile.TemporaryDirectory(prefix="yanhekt-hls-") as tmp:
                         log("  validating video access...")
-                        ffmpeg_input = prepare_ffmpeg_hls_input(signed_url, referer, Path(tmp))
+                        ffmpeg_input = prepare_ffmpeg_hls_input(signed_url, media_ctx, Path(tmp))
                         run_ffmpeg(
                             ffmpeg,
                             str(ffmpeg_input),
                             output,
-                            referer,
+                            media_ctx,
                             args.overwrite,
                             duration,
                             expected_size,

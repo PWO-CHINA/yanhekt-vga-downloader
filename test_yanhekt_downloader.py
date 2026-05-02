@@ -353,6 +353,54 @@ class FilenameTests(unittest.TestCase):
         self.assertIn("Xvideo_Token=redacted", redacted)
         self.assertIn("part=1", redacted)
 
+    def test_video_request_headers_include_browser_context(self) -> None:
+        context = downloader.MediaRequestContext(
+            referer="https://www.yanhekt.cn/session/1",
+            user_agent="Mozilla/5.0 TestBrowser",
+            cookie_header="sid=abc; cdn=ok",
+        )
+
+        headers = downloader.video_request_headers(context)
+
+        self.assertEqual(headers["User-Agent"], "Mozilla/5.0 TestBrowser")
+        self.assertEqual(headers["Referer"], "https://www.yanhekt.cn/session/1")
+        self.assertEqual(headers["Cookie"], "sid=abc; cdn=ok")
+
+    def test_merge_cookie_headers_keeps_latest_cookie_value(self) -> None:
+        merged = downloader.merge_cookie_headers("a=1; b=old", "b=new; c=3")
+
+        self.assertEqual(merged, "a=1; b=new; c=3")
+
+    def test_cookie_header_from_browser_reads_only_requested_media_urls(self) -> None:
+        class FakeCdp:
+            def __init__(self) -> None:
+                self.params = None
+                self.session_id = None
+
+            def call(self, method: str, params: dict[str, object], session_id: str | None = None) -> dict[str, object]:
+                if method != "Network.getCookies":
+                    raise AssertionError(method)
+                self.params = params
+                self.session_id = session_id
+                return {
+                    "cookies": [
+                        {"name": "sid", "value": "abc"},
+                        {"name": "sid", "value": "new"},
+                        {"name": "cdn", "value": "ok"},
+                    ]
+                }
+
+        cdp = FakeCdp()
+        header = downloader.cookie_header_from_browser(
+            cdp,  # type: ignore[arg-type]
+            "https://cvideo.yanhekt.cn/vod/x/VGA.m3u8?Xvideo_Token=tok",
+            "session-1",
+        )
+
+        self.assertEqual(header, "sid=new; cdn=ok")
+        self.assertEqual(cdp.session_id, "session-1")
+        self.assertIn("https://cvideo.yanhekt.cn/", cdp.params["urls"])  # type: ignore[index]
+
     def test_prepare_ffmpeg_hls_input_writes_rewritten_playlist(self) -> None:
         playlist = "https://cvideo.yanhekt.cn/vod/x/VGA.m3u8?Xvideo_Token=tok&Xclient_Signature=sig"
 
@@ -375,8 +423,34 @@ class FilenameTests(unittest.TestCase):
 
         fetch.assert_called_once_with(
             "https://cvideo.yanhekt.cn/vod/x/VGA0.ts?Xvideo_Token=tok&Xclient_Signature=sig",
-            "https://www.yanhekt.cn/session/1",
+            downloader.MediaRequestContext(referer="https://www.yanhekt.cn/session/1"),
         )
+
+    def test_prepare_ffmpeg_hls_input_validates_hls_resources_before_segment(self) -> None:
+        playlist = "https://cvideo.yanhekt.cn/vod/x/VGA.m3u8?Xvideo_Token=tok&Xclient_Signature=sig"
+        context = downloader.MediaRequestContext(
+            referer="https://www.yanhekt.cn/session/1",
+            user_agent="UA",
+            cookie_header="sid=abc",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            downloader,
+            "read_text_url",
+            return_value='#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:10,\nVGA0.ts\n',
+        ), mock.patch.object(
+            downloader,
+            "fetch_bytes_range",
+            side_effect=[
+                (b"\x00\x00\x00\x18ftypisom", "video/mp4"),
+                (b"\x47" + b"\x00" * 187, "video/mp2t"),
+            ],
+        ) as fetch:
+            downloader.prepare_ffmpeg_hls_input(playlist, context, Path(tmp))
+
+        self.assertEqual(fetch.call_args_list[0].args[0], "https://cvideo.yanhekt.cn/vod/x/init.mp4?Xvideo_Token=tok&Xclient_Signature=sig")
+        self.assertEqual(fetch.call_args_list[0].args[1], context)
+        self.assertEqual(fetch.call_args_list[1].args[0], "https://cvideo.yanhekt.cn/vod/x/VGA0.ts?Xvideo_Token=tok&Xclient_Signature=sig")
 
     def test_prepare_ffmpeg_hls_input_rejects_html_segment(self) -> None:
         playlist = "https://cvideo.yanhekt.cn/vod/x/VGA.m3u8?Xvideo_Token=tok&Xclient_Signature=sig"
@@ -418,7 +492,10 @@ class FilenameTests(unittest.TestCase):
 
         self.assertEqual(estimated, 200)
         self.assertEqual(segments, 2)
-        length.assert_any_call("https://cvideo.yanhekt.cn/VGA0.ts?Xvideo_Token=tok", "https://www.yanhekt.cn/session/1")
+        length.assert_any_call(
+            "https://cvideo.yanhekt.cn/VGA0.ts?Xvideo_Token=tok",
+            downloader.MediaRequestContext(referer="https://www.yanhekt.cn/session/1"),
+        )
 
     def test_chrome_launch_args_can_run_headless(self) -> None:
         args = downloader.chrome_launch_args(
@@ -656,6 +733,30 @@ class InstallerTests(unittest.TestCase):
 
             with self.assertRaisesRegex(FileNotFoundError, installer.WORKER_EXE_NAME):
                 installer.validate_installation(install_dir)
+
+    def test_validate_installation_checks_ffmpeg_can_run(self) -> None:
+        installer = load_installer_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            install_dir = Path(tmp)
+            for name in installer.REQUIRED_PAYLOAD_FILES:
+                (install_dir / name).write_text("x", encoding="utf-8")
+
+            with mock.patch.object(installer.subprocess, "run", side_effect=OSError("blocked")):
+                with self.assertRaisesRegex(RuntimeError, "ffmpeg.exe 已安装但无法运行"):
+                    installer.validate_installation(install_dir)
+
+    def test_validate_installation_runs_ffmpeg_version(self) -> None:
+        installer = load_installer_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            install_dir = Path(tmp)
+            for name in installer.REQUIRED_PAYLOAD_FILES:
+                (install_dir / name).write_text("x", encoding="utf-8")
+
+            with mock.patch.object(installer.subprocess, "run") as run:
+                installer.validate_installation(install_dir)
+
+            run.assert_called_once()
+            self.assertEqual(run.call_args.args[0][1], "-version")
 
     def test_install_returns_warning_when_shortcut_fails(self) -> None:
         installer = load_installer_module()

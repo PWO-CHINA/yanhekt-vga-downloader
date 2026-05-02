@@ -148,6 +148,20 @@ def validate_installation(install_dir: Path) -> None:
     missing = [name for name in REQUIRED_PAYLOAD_FILES if not (install_dir / name).exists()]
     if missing:
         raise FileNotFoundError("安装不完整，缺少文件：" + ", ".join(missing))
+    ffmpeg = install_dir / "ffmpeg.exe"
+    try:
+        subprocess.run(
+            [str(ffmpeg), "-version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "ffmpeg.exe 已安装但无法运行。请重新安装，或检查杀毒软件/系统策略是否拦截了 ffmpeg.exe。"
+        ) from exc
 
 
 def ensure_app_not_running(install_dir: Path) -> None:
