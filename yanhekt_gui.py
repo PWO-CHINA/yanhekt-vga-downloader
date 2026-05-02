@@ -27,7 +27,7 @@ def app_dir() -> Path:
 
 SCRIPT_DIR = app_dir()
 DEFAULT_OUTPUT = SCRIPT_DIR / "downloads"
-PLAN_PREFIX = "__YANHEKT_PLAN_JSON__"
+PLAN_PREFIX = downloader.PLAN_JSON_PREFIX
 CHECKED = "☑"
 UNCHECKED = "☐"
 APP_BG = "#f5f7fb"

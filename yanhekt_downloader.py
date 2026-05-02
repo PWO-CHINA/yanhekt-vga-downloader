@@ -32,11 +32,20 @@ from typing import Any, Iterable
 
 YANHE_HOST = "https://www.yanhekt.cn"
 DEFAULT_CDP = "http://127.0.0.1:9222"
+PLAN_JSON_PREFIX = "__YANHEKT_PLAN_JSON__"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/136.0.0.0 Safari/537.36"
 )
+
+
+def configure_standard_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 
 def app_dir() -> Path:
@@ -821,6 +830,10 @@ def plan_json_payload(
     }
 
 
+def plan_json_line(payload: dict[str, Any]) -> str:
+    return PLAN_JSON_PREFIX + json.dumps(payload, ensure_ascii=True)
+
+
 def format_bytes(value: int | float | None) -> str:
     if value is None or value < 0:
         return "unknown"
@@ -1260,6 +1273,7 @@ def prompt_for_missing_args(args: argparse.Namespace) -> bool:
 
 
 def main() -> int:
+    configure_standard_streams()
     args = parse_args()
     if not prompt_for_missing_args(args):
         return 2
@@ -1434,8 +1448,7 @@ def main() -> int:
         return 2
     if args.plan_json:
         print(
-            "__YANHEKT_PLAN_JSON__"
-            + json.dumps(plan_json_payload(info, planned, output_dir), ensure_ascii=False),
+            plan_json_line(plan_json_payload(info, planned, output_dir)),
             flush=True,
         )
         cleanup_launched()

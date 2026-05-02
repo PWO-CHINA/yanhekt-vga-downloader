@@ -56,12 +56,12 @@ ffmpeg 可以放在以下任一位置：
 
 ## 快速开始
 
-### 使用安装版 v0.0.1
+### 使用安装版 v0.0.2
 
 从 Releases 下载：
 
 ```text
-YanhektDownloader_Setup_v0.0.1.exe
+YanhektDownloader_Setup_v0.0.2.exe
 ```
 
 双击安装包后：
@@ -249,13 +249,13 @@ packaging\build_release.bat
 - 生成 Windows exe 版本元数据。
 - 使用 PyInstaller 构建 `YanhektDownloader.exe` 和 `YanhektDownloaderWorker.exe`。
 - 复制 `README.md`、`LICENSE`、`VERSION` 和 `ffmpeg.exe` 到安装 payload。
-- 生成最终安装包 `release\YanhektDownloader_Setup_v0.0.1.exe`。
+- 生成最终安装包 `release\YanhektDownloader_Setup_v0.0.2.exe`。
 
 发布时建议创建 Git tag：
 
 ```powershell
-git tag v0.0.1
-git push origin v0.0.1
+git tag v0.0.2
+git push origin v0.0.2
 ```
 
 ## 仓库卫生

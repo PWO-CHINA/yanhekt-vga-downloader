@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from unittest import mock
@@ -241,6 +242,19 @@ class FilenameTests(unittest.TestCase):
                     yanhekt_gui.downloader_command_base(),
                     [yanhekt_gui.sys.executable, str(root / "yanhekt_downloader.py")],
                 )
+
+    def test_plan_json_line_is_ascii_safe(self) -> None:
+        payload = {
+            "course_name": "生物仪器分析(本科课程)",
+            "items": [{"title": "第1周 星期二 第4大节", "filename": "生物仪器分析_课堂录屏.mp4"}],
+        }
+
+        line = downloader.plan_json_line(payload)
+
+        self.assertTrue(line.isascii())
+        self.assertTrue(line.startswith(downloader.PLAN_JSON_PREFIX))
+        decoded = json.loads(line[len(downloader.PLAN_JSON_PREFIX):])
+        self.assertEqual(decoded, payload)
 
 
 if __name__ == "__main__":
