@@ -1,21 +1,21 @@
-# Yanhekt 课堂录屏下载器
+# yanhekt/延河课堂录屏下载器
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![AI Generated](https://img.shields.io/badge/AI-generated-8A2BE2)
 
-一个 Windows 优先的小工具，用于把本人已登录、已获授权访问的 Yanhekt 课程课堂录屏批量保存为 `.mp4`。项目提供 Tkinter 图形界面，也保留命令行入口。
+一个 Windows 优先的小工具，用于把本人已登录、已获授权访问的 yanhekt/延河课堂课程课堂录屏批量保存为 `.mp4`。项目提供 Tkinter 图形界面，也保留命令行入口。
 
 > **AI 生成声明**  
 > 本项目的代码与文档主要由 OpenAI Codex 根据用户需求自动生成，并经过人工指令、审阅和本地测试后公开。请在使用前自行阅读源码、确认风险，并遵守你所在地区法律法规、课程平台条款和内容授权范围。
 
 ## 重要声明
 
-- 本项目不是 Yanhekt 官方工具，与 Yanhekt 官方无隶属、赞助或背书关系。
+- 本项目不是 yanhekt/延河课堂官方工具，与 yanhekt/延河课堂官方无隶属、赞助或背书关系。
 - 本项目只面向你本人已经有权限访问的课程内容。
 - 本项目不会绕过登录、付费、权限校验或 DRM。
-- 本项目不会读取你的主 Chrome 浏览器数据库。
+- 本项目不会读取你的主 Chrome 或 Edge 浏览器数据库。
 - 本项目不会授予你下载、复制、传播、公开分享课程内容的权利。
 - 请只在平台条款、课程授权和相关法律允许的范围内使用。
 
@@ -27,7 +27,7 @@
 - 按“课程名 + 单节课堂标题”自动命名，空格会转换为下划线，例如 `生物仪器分析(本科课程)_第1周_星期二_第4大节_课堂录屏.mp4`。
 - 显示下载进度、预计剩余时间和估算占用空间。
 - 支持 GUI 一键启动，也支持命令行批处理。
-- GUI 下载阶段会优先在后台复用专用 Chrome 登录状态，通常不会额外弹出浏览器窗口；登录失效时才会打开窗口让你重新登录。
+- GUI 下载阶段会优先在后台复用专用浏览器登录状态，通常不会额外弹出浏览器窗口；登录失效时才会打开窗口让你重新登录。
 - 自动修复早期版本生成的 `.mp_` 或 `_VGA.mp4` 旧文件名。
 
 ## 环境要求
@@ -35,15 +35,15 @@
 安装版：
 
 - Windows 10/11
-- Google Chrome
+- Google Chrome 或 Microsoft Edge
 
-安装版会随包携带 `ffmpeg.exe`，但不会携带 Chrome。首次使用仍需要在工具打开的专用 Chrome 窗口中登录 Yanhekt。
+安装版会随包携带 `ffmpeg.exe`，但不会携带浏览器。首次使用仍需要在工具打开的专用 Chrome 或 Edge 窗口中登录 yanhekt/延河课堂。
 
 源码运行：
 
 - Windows 10/11
 - Python 3.10 或更新版本
-- Google Chrome
+- Google Chrome 或 Microsoft Edge
 - ffmpeg
 
 本项目不依赖第三方 Python 包。Tkinter 通常随 Windows 版 Python 一起安装。
@@ -56,24 +56,24 @@ ffmpeg 可以放在以下任一位置：
 
 ## 快速开始
 
-### 使用安装版 v0.0.3
+### 使用安装版 v0.0.4
 
 从 Releases 下载：
 
 ```text
-YanhektDownloader_Setup_v0.0.3.exe
+YanhektDownloader_Setup_v0.0.4.exe
 ```
 
 双击安装包后：
 
 1. 选择安装文件夹，默认建议为当前用户目录下的 `Programs\YanhektDownloader`。
-2. 保持“创建桌面快捷方式”勾选。
+2. 保持“创建桌面快捷方式”勾选，桌面会创建 `yanhekt-延河课堂录屏下载器`。
 3. 点击“安装”。
-4. 安装完成后打开 `Yanhekt Downloader`。v0.0.3 会更可靠地创建桌面快捷方式，支持 OneDrive 或系统策略重定向后的桌面路径。
+4. 安装完成后打开 `yanhekt-延河课堂录屏下载器`。v0.0.4 会优先使用 Chrome；如果没有安装 Chrome，会自动使用系统自带的 Microsoft Edge。
 5. 粘贴延河课堂课堂主页网址链接，例如 `https://www.yanhekt.cn/course/12345`。
 6. 点击“加载课程清单”，勾选要下载的课堂录屏，再点击“开始下载勾选项”。
 
-注意：安装版不是 Yanhekt 官方客户端。它仍然只使用你本人已经登录并有权限访问的内容。
+注意：安装版不是 yanhekt/延河课堂官方客户端。它仍然只使用你本人已经登录并有权限访问的内容。
 
 ### 从源码运行
 
@@ -104,19 +104,19 @@ START_YANHEKT_GUI.bat
 
 ## 首次登录
 
-首次运行时，如果程序无法连接到已打开的本地 Chrome DevTools，会启动一个独立 Chrome 配置目录。Windows 默认位置：
+首次运行时，如果程序无法连接到已打开的本地 Chromium DevTools，会启动一个独立浏览器配置目录。Windows 默认位置：
 
 ```text
 %LOCALAPPDATA%\YanhektDownloader\chrome-profile
 ```
 
-请在这个独立 Chrome 窗口中登录 Yanhekt。登录后，程序会在该已登录页面上下文中读取你有权访问的课程列表和课堂录屏地址，再调用 ffmpeg 保存为 mp4。
+请在这个独立 Chrome 或 Edge 窗口中登录 yanhekt/延河课堂。登录后，程序会在该已登录页面上下文中读取你有权访问的课程列表和课堂录屏地址，再调用 ffmpeg 保存为 mp4。
 
-这个独立 Chrome 配置会像普通浏览器一样保存登录状态。不要上传、打包或分享该目录。
+这个独立浏览器配置会像普通浏览器一样保存登录状态。不要上传、打包或分享该目录。目录名保留为 `chrome-profile` 是为了兼容旧版本登录状态。
 
-在 GUI 中点击“下载勾选项”时，如果这个专用配置里仍有有效登录，程序会尽量使用后台 Chrome 完成签名和下载，不会每节课弹出一个浏览器窗口。如果登录已经失效，程序会打开一个可见 Chrome 窗口让你重新登录；任务结束后，除非勾选“结束后保留登录浏览器”，该窗口会被自动关闭。
+在 GUI 中点击“下载勾选项”时，如果这个专用配置里仍有有效登录，程序会尽量使用后台浏览器完成签名和下载，不会每节课弹出一个浏览器窗口。如果登录已经失效，程序会打开一个可见 Chrome 或 Edge 窗口让你重新登录；任务结束后，除非勾选“结束后保留登录浏览器”，该窗口会被自动关闭。
 
-如果需要退出该专用浏览器登录，可在 GUI 中点击“清除浏览器登录”。这个操作只删除本工具的专用 Chrome 配置目录，不会影响你的主 Chrome 浏览器。
+如果需要退出该专用浏览器登录，可在 GUI 中点击“清除浏览器登录”。这个操作只删除本工具的专用浏览器配置目录，不会影响你的主 Chrome 或 Edge 浏览器。
 
 ## 命令行用法
 
@@ -147,6 +147,7 @@ python yanhekt_downloader.py 12345 --newest-first --limit 3
 python yanhekt_downloader.py 12345 --overwrite
 python yanhekt_downloader.py 12345 --no-size-estimate
 python yanhekt_downloader.py 12345 --ffmpeg C:\path\to\ffmpeg.exe
+python yanhekt_downloader.py 12345 --browser "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 ```
 
 参数说明：
@@ -161,24 +162,25 @@ python yanhekt_downloader.py 12345 --ffmpeg C:\path\to\ffmpeg.exe
 | `--limit N` | 只下载排序后的前 N 个视频。 |
 | `--overwrite` | 覆盖已存在的 mp4 文件。 |
 | `--no-size-estimate` | 跳过下载前占用空间估算。 |
-| `--keep-browser-open` | 脚本结束后保留独立 Chrome 窗口。 |
-| `--background-browser` | 尽量用后台 Chrome 复用专用登录状态，适合 GUI 下载阶段。 |
+| `--browser` | 指定 Chrome 或 Edge 可执行文件路径。旧参数名 `--chrome` 仍可用。 |
+| `--keep-browser-open` | 脚本结束后保留独立浏览器窗口。 |
+| `--background-browser` | 尽量用后台浏览器复用专用登录状态，适合 GUI 下载阶段。 |
 
 ## 隐私与安全边界
 
-这个工具的工作方式是连接本机 `127.0.0.1` 上的 Chrome DevTools Protocol，并在已登录的 Yanhekt 页面上下文中执行正常的前端请求。
+这个工具的工作方式是连接本机 `127.0.0.1` 上的 Chromium DevTools Protocol，并在已登录的 yanhekt/延河课堂页面上下文中执行正常的前端请求。
 
 它的边界：
 
-- 不读取主 Chrome 用户数据目录或浏览器数据库。
-- 不把 Yanhekt 登录 token 写入自己的配置文件或日志。
+- 不读取主 Chrome 或 Edge 用户数据目录或浏览器数据库。
+- 不把 yanhekt/延河课堂登录 token 写入自己的配置文件或日志。
 - 不尝试绕过访问控制、付费权限或 DRM。
-- 默认把独立 Chrome 配置放在源码目录外，降低误提交风险。
+- 默认把独立浏览器配置放在源码目录外，降低误提交风险。
 - `.gitignore` 已排除下载产物、浏览器配置、缓存和大体积二进制文件。
 
 仍需注意：
 
-- 独立 Chrome 配置会保存登录态。
+- 独立浏览器配置会保存登录态。
 - 下载的视频可能受课程平台条款、版权或课堂授权限制。
 - 你需要自行判断是否允许离线保存和如何保存。
 
@@ -209,7 +211,7 @@ python yanhekt_gui.py
 
 ### 下载时要求登录
 
-请在程序打开的独立 Chrome 窗口里登录 Yanhekt。登录完成后不要关闭窗口，程序会继续等待并读取课程信息。
+请在程序打开的独立 Chrome 或 Edge 窗口里登录 yanhekt/延河课堂。登录完成后不要关闭窗口，程序会继续等待并读取课程信息。
 
 ### ffmpeg 找不到
 
@@ -249,13 +251,13 @@ packaging\build_release.bat
 - 生成 Windows exe 版本元数据。
 - 使用 PyInstaller 构建 `YanhektDownloader.exe` 和 `YanhektDownloaderWorker.exe`。
 - 复制 `README.md`、`LICENSE`、`VERSION` 和 `ffmpeg.exe` 到安装 payload。
-- 生成最终安装包 `release\YanhektDownloader_Setup_v0.0.3.exe`。
+- 生成最终安装包 `release\YanhektDownloader_Setup_v0.0.4.exe`。
 
 发布时建议创建 Git tag：
 
 ```powershell
-git tag v0.0.3
-git push origin v0.0.3
+git tag v0.0.4
+git push origin v0.0.4
 ```
 
 ## 仓库卫生
@@ -285,4 +287,4 @@ git ls-files
 
 本项目源码使用 [MIT License](LICENSE)。
 
-MIT License 只覆盖本仓库中的源码和文档，不授予任何 Yanhekt 平台、课程视频、课程资料、商标或第三方内容的使用权。课程内容的权利归其合法权利人所有。
+MIT License 只覆盖本仓库中的源码和文档，不授予任何 yanhekt/延河课堂平台、课程视频、课程资料、商标或第三方内容的使用权。课程内容的权利归其合法权利人所有。

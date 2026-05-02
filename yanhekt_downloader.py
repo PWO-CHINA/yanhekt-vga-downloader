@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Batch-download Yanhekt course classroom recordings you can already access in Chrome.
+Batch-download yanhekt/延河课堂 course classroom recordings you can already access in a Chromium browser.
 
 Safety notes:
-- Connects only to a local Chrome DevTools endpoint on 127.0.0.1.
+- Connects only to a local Chromium DevTools endpoint on 127.0.0.1.
 - Uses the logged-in yanhekt.cn page context to call the same front-end APIs.
-- Does not read Chrome profile databases or write auth tokens to its own files.
-- The dedicated Chrome profile stores login state like a normal browser profile.
+- Does not read browser profile databases or write auth tokens to its own files.
+- The dedicated browser profile stores login state like a normal browser profile.
 - Does not attempt to bypass DRM or access control.
 """
 
@@ -303,6 +303,14 @@ def read_devtools_port(profile_dir: Path) -> str | None:
     return port or None
 
 
+def local_browser_profile_dirs() -> list[Path]:
+    local_app_data = Path(os.environ.get("LOCALAPPDATA", ""))
+    return [
+        local_app_data / "Google" / "Chrome" / "User Data",
+        local_app_data / "Microsoft" / "Edge" / "User Data",
+    ]
+
+
 def discover_cdp_base(user_base: str | None, profile_dir: Path | None = None) -> str:
     if user_base:
         return user_base.rstrip("/")
@@ -313,43 +321,63 @@ def discover_cdp_base(user_base: str | None, profile_dir: Path | None = None) ->
         port = read_devtools_port(profile_dir)
         if port:
             return f"http://127.0.0.1:{port}"
-    port_file = (
-        Path(os.environ.get("LOCALAPPDATA", ""))
-        / "Google"
-        / "Chrome"
-        / "User Data"
-        / "DevToolsActivePort"
-    )
-    port = read_devtools_port(port_file.parent)
-    if port:
-        return f"http://127.0.0.1:{port}"
+    for browser_profile in local_browser_profile_dirs():
+        port = read_devtools_port(browser_profile)
+        if port:
+            return f"http://127.0.0.1:{port}"
     return DEFAULT_CDP
 
 
-def find_chrome(user_path: str | None) -> str:
+def chromium_browser_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    program_files = Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
+    program_files_x86 = Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)"))
+    local_app_data = os.environ.get("LOCALAPPDATA")
+
+    candidates.extend(
+        [
+            program_files / "Google" / "Chrome" / "Application" / "chrome.exe",
+            program_files_x86 / "Google" / "Chrome" / "Application" / "chrome.exe",
+        ]
+    )
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "Google" / "Chrome" / "Application" / "chrome.exe")
+
+    candidates.extend(
+        [
+            program_files_x86 / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+            program_files / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+        ]
+    )
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
+
+    for executable in ("chrome.exe", "chrome", "msedge.exe", "msedge"):
+        found = shutil.which(executable)
+        if found:
+            candidates.append(Path(found))
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key not in seen:
+            unique.append(candidate)
+            seen.add(key)
+    return unique
+
+
+def find_browser(user_path: str | None) -> str:
     if user_path:
         return str(Path(user_path))
-    candidates = [
-        Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
-        / "Google"
-        / "Chrome"
-        / "Application"
-        / "chrome.exe",
-        Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)"))
-        / "Google"
-        / "Chrome"
-        / "Application"
-        / "chrome.exe",
-        Path(os.environ.get("LOCALAPPDATA", ""))
-        / "Google"
-        / "Chrome"
-        / "Application"
-        / "chrome.exe",
-    ]
-    for candidate in candidates:
+    for candidate in chromium_browser_candidates():
         if candidate.exists():
             return str(candidate)
-    raise FileNotFoundError("Chrome not found. Pass --chrome PATH.")
+    raise FileNotFoundError("Chrome or Microsoft Edge not found. Pass --browser PATH.")
+
+
+def find_chrome(user_path: str | None) -> str:
+    return find_browser(user_path)
 
 
 def chrome_launch_args(chrome_path: str, profile_dir: Path, url: str, headless: bool = False) -> list[str]:
@@ -395,14 +423,14 @@ def launch_dedicated_chrome(
     deadline = time.time() + 30
     while time.time() < deadline:
         if proc.poll() is not None:
-            raise CdpError(f"Chrome exited early with code {proc.returncode}")
+            raise CdpError(f"Browser exited early with code {proc.returncode}")
         if port_file.exists():
             lines = port_file.read_text(encoding="utf-8").splitlines()
             if lines:
                 return proc, f"http://127.0.0.1:{lines[0].strip()}"
         time.sleep(0.25)
     proc.terminate()
-    raise CdpError("Timed out waiting for dedicated Chrome DevToolsActivePort")
+    raise CdpError("Timed out waiting for dedicated browser DevToolsActivePort")
 
 
 def list_pages(cdp_base: str) -> list[dict[str, Any]]:
@@ -432,14 +460,10 @@ def browser_ws_url(cdp_base: str) -> str:
     if not port:
         port = 80 if parsed.scheme == "http" else 443
 
-    port_file = (
-        Path(os.environ.get("LOCALAPPDATA", ""))
-        / "Google"
-        / "Chrome"
-        / "User Data"
-        / "DevToolsActivePort"
-    )
-    if port_file.exists():
+    for browser_profile in local_browser_profile_dirs():
+        port_file = browser_profile / "DevToolsActivePort"
+        if not port_file.exists():
+            continue
         lines = port_file.read_text(encoding="utf-8").splitlines()
         if len(lines) >= 2:
             file_port = lines[0].strip() or str(port)
@@ -509,7 +533,7 @@ def course_info_expression(course_input: str) -> str:
   const courseId = match[1];
   const auth = JSON.parse(localStorage.getItem("auth") || "{{}}");
   if (!auth.token || !auth.expired_at || auth.expired_at <= Date.now()) {{
-    throw new Error("Yanhekt login is missing or expired in this Chrome profile.");
+    throw new Error("yanhekt/延河课堂 login is missing or expired in this browser profile.");
   }}
   const headers = {{
     "Authorization": "Bearer " + auth.token,
@@ -582,7 +606,7 @@ def sign_url_expression(raw_url: str, user_badge: str) -> str:
   const userBadge = {js_string(user_badge)};
   const auth = JSON.parse(localStorage.getItem("auth") || "{{}}");
   if (!auth.token || !auth.expired_at || auth.expired_at <= Date.now()) {{
-    throw new Error("Yanhekt login is missing or expired in this Chrome profile.");
+    throw new Error("yanhekt/延河课堂 login is missing or expired in this browser profile.");
   }}
   let req;
   window.webpackChunkyanhe_web.push([[Math.floor(Math.random() * 1e9)], {{}}, (r) => {{ req = r; }}]);
@@ -627,7 +651,7 @@ def wait_for_page_ready(cdp: CdpClient, session_id: str | None = None, timeout: 
         except Exception as exc:
             last_error = str(exc)
         time.sleep(1)
-    raise CdpError("Yanhekt page is not ready or not logged in. " + last_error)
+    raise CdpError("yanhekt/延河课堂 page is not ready or not logged in. " + last_error)
 
 
 def sanitize_filename(name: str, max_len: int = 180) -> str:
@@ -1187,7 +1211,7 @@ def run_ffmpeg(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Download classroom recordings from a yanhekt course page using your open Chrome login."
+        description="Download classroom recordings from a yanhekt/延河课堂 course page using your Chrome or Edge login."
     )
     parser.add_argument("course_url", nargs="?", help="Example: https://www.yanhekt.cn/course/12345")
     parser.add_argument(
@@ -1196,12 +1220,22 @@ def parse_args() -> argparse.Namespace:
         default=str(app_dir() / "downloads"),
         help="Output directory. Default: getvideo/downloads",
     )
-    parser.add_argument("--cdp", default=None, help="Chrome DevTools base URL. Default: auto or http://127.0.0.1:9222")
-    parser.add_argument("--chrome", default=None, help="Path to chrome.exe for the dedicated browser fallback.")
+    parser.add_argument(
+        "--cdp",
+        default=None,
+        help="Chromium DevTools base URL. Default: auto or http://127.0.0.1:9222",
+    )
+    parser.add_argument(
+        "--chrome",
+        "--browser",
+        dest="browser",
+        default=None,
+        help="Path to chrome.exe or msedge.exe for the dedicated browser fallback.",
+    )
     parser.add_argument(
         "--profile-dir",
         default=str(default_profile_dir()),
-        help="Dedicated Chrome profile directory. Default: user-local YanhektDownloader state folder.",
+        help="Dedicated browser profile directory. Default: user-local YanhektDownloader state folder.",
     )
     parser.add_argument("--ffmpeg", default=None, help="Path to ffmpeg.exe")
     parser.add_argument("--limit", type=int, default=0, help="Download only the first N items after sorting.")
@@ -1248,23 +1282,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-launch",
         action="store_true",
-        help="Do not launch a dedicated Chrome if the current DevTools endpoint is unavailable.",
+        help="Do not launch a dedicated browser if the current DevTools endpoint is unavailable.",
     )
     parser.add_argument(
         "--login-timeout",
         type=int,
         default=600,
-        help="Seconds to wait for you to log in when a dedicated Chrome opens. Default: 600",
+        help="Seconds to wait for you to log in when a dedicated browser opens. Default: 600",
     )
     parser.add_argument(
         "--keep-browser-open",
         action="store_true",
-        help="Keep the dedicated Chrome window open after the script finishes.",
+        help="Keep the dedicated browser window open after the script finishes.",
     )
     parser.add_argument(
         "--background-browser",
         action="store_true",
-        help="Launch the dedicated Chrome fallback in headless background mode when possible.",
+        help="Launch the dedicated browser fallback in headless background mode when possible.",
     )
     return parser.parse_args()
 
@@ -1272,7 +1306,7 @@ def parse_args() -> argparse.Namespace:
 def prompt_for_missing_args(args: argparse.Namespace) -> bool:
     if args.course_url:
         return True
-    print("Yanhekt 课堂录屏批量下载")
+    print("yanhekt/延河课堂录屏批量下载")
     print()
     print("请粘贴“课程列表链接”（course/数字），不是单节视频播放页（session/数字）。")
     print("例子：https://www.yanhekt.cn/course/12345")
@@ -1322,7 +1356,7 @@ def main() -> int:
     def launch_chrome(headless: bool) -> None:
         nonlocal launched_proc, launched_headless, cdp_base
         launched_proc, cdp_base = launch_dedicated_chrome(
-            find_chrome(args.chrome),
+            find_browser(args.browser),
             profile_dir,
             course_url,
             headless=headless,
@@ -1334,9 +1368,9 @@ def main() -> int:
             raise CdpError(reason)
         print(reason)
         if args.background_browser and not visible_for_login:
-            print("Opening a background Chrome session and continuing...")
+            print("Opening a background browser session and continuing...")
         else:
-            print("Reopening the dedicated Chrome window and continuing...")
+            print("Reopening the dedicated browser window and continuing...")
         stop_launched_for_reconnect()
         launch_chrome(headless=args.background_browser and not visible_for_login)
 
@@ -1345,7 +1379,7 @@ def main() -> int:
             return connect_yanhe_session(cdp_base, course_url)
         except Exception as exc:
             relaunch_dedicated_chrome(
-                "Chrome connection is unavailable or was closed while the task was running. "
+                "Browser connection is unavailable or was closed while the task was running. "
                 f"Details: {exc}"
             )
             return connect_yanhe_session(cdp_base, course_url)
@@ -1367,12 +1401,12 @@ def main() -> int:
                 except Exception:
                     pass
                 relaunch_dedicated_chrome(
-                    "Background Chrome is not logged in or the login expired. "
-                    "A visible Chrome window is needed once for login.",
+                    "Background browser is not logged in or the login expired. "
+                    "A visible browser window is needed once for login.",
                     visible_for_login=True,
                 )
                 cdp_client, attached_session_id, _target = connect_yanhe_session(cdp_base, course_url)
-            print("Please log in to yanhekt.cn in the Chrome window that just opened.")
+            print("Please log in to yanhekt/延河课堂 (yanhekt.cn) in the browser window that just opened.")
             print(f"Waiting up to {args.login_timeout} seconds...")
             wait_for_page_ready(
                 cdp_client,
@@ -1399,7 +1433,7 @@ def main() -> int:
                 if attempt == 0 and not args.no_launch:
                     try:
                         relaunch_dedicated_chrome(
-                            "Chrome was closed or disconnected while preparing this video. "
+                            "Browser was closed or disconnected while preparing this video. "
                             "The downloader will retry once."
                         )
                     except Exception as relaunch_exc:
@@ -1414,8 +1448,8 @@ def main() -> int:
                     except Exception:
                         pass
         raise CdpError(
-            "Could not prepare the video URL. If the Chrome window was closed, "
-            "please keep the reopened Chrome window open and retry. "
+            "Could not prepare the video URL. If the browser window was closed, "
+            "please keep the reopened browser window open and retry. "
             f"Details: {last_error}"
         )
 
@@ -1423,19 +1457,19 @@ def main() -> int:
         cdp, session_id, _target = connect_yanhe_session(cdp_base, course_url)
     except Exception as exc:
         if args.no_launch:
-            print(f"Could not connect to Chrome DevTools at {cdp_base}: {exc}", file=sys.stderr)
-            print("Open Chrome with a logged-in yanhekt.cn page, then retry.", file=sys.stderr)
+            print(f"Could not connect to Chromium DevTools at {cdp_base}: {exc}", file=sys.stderr)
+            print("Open Chrome or Edge with a logged-in yanhekt.cn page, then retry.", file=sys.stderr)
             return 2
-        print("Current Chrome DevTools endpoint is not usable from this script.")
+        print("Current Chromium DevTools endpoint is not usable from this script.")
         if args.background_browser:
-            print("Launching a background Chrome session for yanhekt downloads...")
+            print("Launching a background browser session for yanhekt/延河课堂 downloads...")
         else:
-            print("Launching a dedicated local Chrome profile for yanhekt downloads...")
+            print("Launching a dedicated local browser profile for yanhekt/延河课堂 downloads...")
         try:
             launch_chrome(headless=args.background_browser)
             cdp, session_id, _target = connect_yanhe_session(cdp_base, course_url)
         except Exception as launch_exc:
-            print(f"Could not launch/connect to dedicated Chrome: {launch_exc}", file=sys.stderr)
+            print(f"Could not launch/connect to dedicated browser: {launch_exc}", file=sys.stderr)
             cleanup_launched()
             return 2
 

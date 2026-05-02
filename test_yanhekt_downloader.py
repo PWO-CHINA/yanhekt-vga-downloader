@@ -180,6 +180,10 @@ class FilenameTests(unittest.TestCase):
         main_chrome = Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data"
         self.assertFalse(downloader.is_managed_profile_dir(main_chrome))
 
+    def test_managed_profile_dir_rejects_main_edge_profile(self) -> None:
+        main_edge = Path.home() / "AppData" / "Local" / "Microsoft" / "Edge" / "User Data"
+        self.assertFalse(downloader.is_managed_profile_dir(main_edge))
+
     def test_managed_profile_dir_accepts_named_tool_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             profile = Path(tmp) / "YanhektDownloader" / "chrome-profile"
@@ -194,6 +198,33 @@ class FilenameTests(unittest.TestCase):
 
             with mock.patch.dict(downloader.os.environ, {"LOCALAPPDATA": str(Path(tmp) / "LocalAppData")}, clear=True):
                 self.assertEqual(downloader.discover_cdp_base(None, profile), "http://127.0.0.1:45678")
+
+    def test_discover_cdp_base_can_find_edge_profile_port(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            local_app_data = Path(tmp) / "LocalAppData"
+            edge_profile = local_app_data / "Microsoft" / "Edge" / "User Data"
+            edge_profile.mkdir(parents=True)
+            (edge_profile / "DevToolsActivePort").write_text("56789\n/devtools/browser/edge\n", encoding="utf-8")
+
+            with mock.patch.dict(downloader.os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=True):
+                self.assertEqual(downloader.discover_cdp_base(None, None), "http://127.0.0.1:56789")
+
+    def test_browser_ws_url_can_use_edge_devtools_port_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            local_app_data = Path(tmp) / "LocalAppData"
+            edge_profile = local_app_data / "Microsoft" / "Edge" / "User Data"
+            edge_profile.mkdir(parents=True)
+            (edge_profile / "DevToolsActivePort").write_text("56789\n/devtools/browser/edge\n", encoding="utf-8")
+
+            with mock.patch.dict(downloader.os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=True), mock.patch.object(
+                downloader,
+                "http_json",
+                side_effect=RuntimeError("no version endpoint"),
+            ):
+                self.assertEqual(
+                    downloader.browser_ws_url("http://127.0.0.1:9222"),
+                    "ws://127.0.0.1:56789/devtools/browser/edge",
+                )
 
     def test_chrome_launch_args_can_run_headless(self) -> None:
         args = downloader.chrome_launch_args(
@@ -227,6 +258,82 @@ class FilenameTests(unittest.TestCase):
 
     def test_find_ffmpeg_accepts_explicit_path(self) -> None:
         self.assertEqual(downloader.find_ffmpeg("C:/tools/ffmpeg.exe"), str(Path("C:/tools/ffmpeg.exe")))
+
+    def test_find_browser_prefers_chrome_when_both_are_installed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chrome = root / "ProgramFiles" / "Google" / "Chrome" / "Application" / "chrome.exe"
+            edge = root / "ProgramFilesX86" / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+            chrome.parent.mkdir(parents=True)
+            edge.parent.mkdir(parents=True)
+            chrome.write_text("chrome", encoding="utf-8")
+            edge.write_text("edge", encoding="utf-8")
+            env = {
+                "PROGRAMFILES": str(root / "ProgramFiles"),
+                "PROGRAMFILES(X86)": str(root / "ProgramFilesX86"),
+                "LOCALAPPDATA": str(root / "LocalAppData"),
+            }
+
+            with mock.patch.dict(downloader.os.environ, env, clear=True), mock.patch.object(
+                downloader.shutil,
+                "which",
+                return_value=None,
+            ):
+                self.assertEqual(downloader.find_browser(None), str(chrome))
+
+    def test_find_browser_falls_back_to_edge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            edge = root / "ProgramFilesX86" / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+            edge.parent.mkdir(parents=True)
+            edge.write_text("edge", encoding="utf-8")
+            env = {
+                "PROGRAMFILES": str(root / "ProgramFiles"),
+                "PROGRAMFILES(X86)": str(root / "ProgramFilesX86"),
+                "LOCALAPPDATA": str(root / "LocalAppData"),
+            }
+
+            with mock.patch.dict(downloader.os.environ, env, clear=True), mock.patch.object(
+                downloader.shutil,
+                "which",
+                return_value=None,
+            ):
+                self.assertEqual(downloader.find_browser(None), str(edge))
+
+    def test_find_browser_accepts_explicit_path(self) -> None:
+        self.assertEqual(downloader.find_browser("C:/tools/msedge.exe"), str(Path("C:/tools/msedge.exe")))
+
+    def test_find_browser_error_mentions_chrome_and_edge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {
+                "PROGRAMFILES": str(root / "ProgramFiles"),
+                "PROGRAMFILES(X86)": str(root / "ProgramFilesX86"),
+                "LOCALAPPDATA": str(root / "LocalAppData"),
+            }
+            with mock.patch.dict(downloader.os.environ, env, clear=True), mock.patch.object(
+                downloader.shutil,
+                "which",
+                return_value=None,
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "Chrome or Microsoft Edge"):
+                    downloader.find_browser(None)
+
+    def test_parse_args_keeps_legacy_chrome_option_as_browser_path(self) -> None:
+        with mock.patch.object(
+            downloader.sys,
+            "argv",
+            ["yanhekt_downloader.py", "12345", "--chrome", "C:/tools/msedge.exe"],
+        ):
+            self.assertEqual(downloader.parse_args().browser, "C:/tools/msedge.exe")
+
+    def test_parse_args_accepts_browser_option(self) -> None:
+        with mock.patch.object(
+            downloader.sys,
+            "argv",
+            ["yanhekt_downloader.py", "12345", "--browser", "C:/tools/msedge.exe"],
+        ):
+            self.assertEqual(downloader.parse_args().browser, "C:/tools/msedge.exe")
 
     def test_gui_uses_worker_exe_when_frozen(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -276,7 +383,14 @@ class InstallerTests(unittest.TestCase):
             root = Path(tmp)
             install_dir = root / "Install Dir"
             install_dir.mkdir()
+            icon_file = install_dir / installer.APP_ICON_NAME
+            icon_file.write_text("icon", encoding="utf-8")
             desktop = root / "Redirected Desktop"
+            legacy_shortcut = desktop / "Yanhekt Downloader.lnk"
+            legacy_shortcut.parent.mkdir(parents=True)
+            legacy_shortcut.write_text("legacy", encoding="utf-8")
+            current_shortcut = desktop / f"{installer.APP_NAME}.lnk"
+            current_shortcut.write_text("old target", encoding="utf-8")
             logs: list[str] = []
 
             def fake_save(target: Path, shortcut: Path, working_dir: Path, description: str, icon: str) -> None:
@@ -284,7 +398,8 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(shortcut, desktop / f"{installer.APP_NAME}.lnk")
                 self.assertEqual(working_dir, install_dir)
                 self.assertEqual(description, installer.APP_NAME)
-                self.assertTrue(icon.endswith(",0"))
+                self.assertEqual(icon, str(icon_file))
+                self.assertFalse(shortcut.exists())
                 shortcut.write_text("shortcut", encoding="utf-8")
 
             with mock.patch.object(installer, "desktop_path", return_value=desktop), mock.patch.object(
@@ -295,6 +410,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertTrue(installer.create_desktop_shortcut(install_dir, logs.append))
 
             self.assertTrue((desktop / f"{installer.APP_NAME}.lnk").exists())
+            self.assertFalse(legacy_shortcut.exists())
             self.assertIn("已创建桌面快捷方式", logs[-1])
 
     def test_create_desktop_shortcut_fails_if_lnk_was_not_created(self) -> None:

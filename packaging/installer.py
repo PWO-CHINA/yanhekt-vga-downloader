@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Installer for the Yanhekt Downloader release payload."""
+"""Installer for the yanhekt/延河课堂 downloader release payload."""
 
 from __future__ import annotations
 
@@ -17,9 +17,11 @@ import tkinter as tk
 import uuid
 
 
-APP_NAME = "Yanhekt Downloader"
+APP_NAME = "yanhekt-延河课堂录屏下载器"
 EXE_NAME = "YanhektDownloader.exe"
+APP_ICON_NAME = "yanhekt_downloader.ico"
 PAYLOAD_NAME = "release_payload.zip"
+LEGACY_SHORTCUT_NAMES = ["Yanhekt Downloader.lnk", "yanhekt 延河课堂录屏下载器.lnk"]
 
 CLSID_SHELL_LINK = "00021401-0000-0000-C000-000000000046"
 IID_ISHELL_LINK_W = "000214F9-0000-0000-C000-000000000046"
@@ -188,15 +190,23 @@ def save_shell_shortcut(
 
 def create_desktop_shortcut(install_dir: Path, log: Callable[[str], None]) -> bool:
     target = install_dir / EXE_NAME
-    shortcut = desktop_path() / f"{APP_NAME}.lnk"
+    desktop = desktop_path()
+    shortcut = desktop / f"{APP_NAME}.lnk"
+    icon = install_dir / APP_ICON_NAME
+    icon_location = str(icon if icon.exists() else target)
     try:
         shortcut.parent.mkdir(parents=True, exist_ok=True)
+        for legacy_shortcut in [shortcut] + [desktop / legacy_name for legacy_name in LEGACY_SHORTCUT_NAMES]:
+            if legacy_shortcut != shortcut and legacy_shortcut.exists():
+                legacy_shortcut.unlink()
+            elif legacy_shortcut == shortcut and legacy_shortcut.exists():
+                legacy_shortcut.unlink()
         save_shell_shortcut(
             target,
             shortcut,
             install_dir,
             APP_NAME,
-            f"{target},0",
+            icon_location,
         )
     except Exception as exc:
         log(f"桌面快捷方式创建失败：{exc}")
@@ -242,7 +252,7 @@ class InstallerUi:
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(5, weight=1)
 
-        ttk.Label(frame, text="安装 Yanhekt Downloader", font=("Microsoft YaHei UI", 13, "bold")).grid(
+        ttk.Label(frame, text="安装 yanhekt/延河课堂录屏下载器", font=("Microsoft YaHei UI", 13, "bold")).grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 10)
         )
         ttk.Label(frame, text="请选择安装文件夹。安装后可双击桌面快捷方式启动。").grid(

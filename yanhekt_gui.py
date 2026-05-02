@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small Tkinter launcher for the Yanhekt classroom recording downloader."""
+"""Small Tkinter launcher for the yanhekt/延河课堂 classroom recording downloader."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def downloader_command_base() -> list[str]:
 class YanhektGui:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Yanhekt 课堂录屏批量下载")
+        self.root.title("yanhekt/延河课堂录屏批量下载")
         self.root.geometry("1120x720")
         self.root.minsize(900, 560)
 
@@ -704,8 +704,8 @@ class YanhektGui:
             return
         ok = messagebox.askyesno(
             "清除浏览器登录",
-            "这会删除本工具专用 Chrome 配置目录，包括 Yanhekt 登录状态、缓存和历史。\n\n"
-            "不会影响你的主 Chrome 浏览器。\n\n"
+            "这会删除本工具专用浏览器配置目录，包括 yanhekt/延河课堂登录状态、缓存和历史。\n\n"
+            "不会影响你的主 Chrome 或 Edge 浏览器。\n\n"
             f"将删除：\n{profile_dir}\n\n"
             "确定继续吗？",
         )
@@ -718,7 +718,7 @@ class YanhektGui:
             return
         self.clear_plan("已清除专用浏览器登录，请重新加载课程清单")
         self.append_log(f"\n=== 已清除专用浏览器登录 ===\n{profile_dir}\n")
-        messagebox.showinfo("已清除", "专用浏览器登录状态已清除。下次运行会重新打开 Chrome 并要求登录。")
+        messagebox.showinfo("已清除", "专用浏览器登录状态已清除。下次运行会重新打开 Chrome 或 Edge 并要求登录。")
 
     def on_close(self) -> None:
         if self.process is not None:

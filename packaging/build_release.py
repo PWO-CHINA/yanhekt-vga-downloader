@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the v0.0.x Windows installer for Yanhekt Downloader."""
+"""Build the v0.0.x Windows installer for the yanhekt/延河课堂 downloader."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ PAYLOAD_DIR = BUILD_DIR / "payload"
 PAYLOAD_ZIP = BUILD_DIR / "release_payload.zip"
 APP_EXE = "YanhektDownloader.exe"
 WORKER_EXE = "YanhektDownloaderWorker.exe"
+APP_ICON = "yanhekt_downloader.ico"
 SETUP_NAME_TEMPLATE = "YanhektDownloader_Setup_v{version}.exe"
 
 
@@ -73,8 +74,9 @@ def generate_icon(icon_path: Path) -> None:
     sizes = [16, 24, 32, 48, 64, 128, 256]
     images: list[Image.Image] = []
     for size in sizes:
-        scale = size / 256
-        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        canvas_size = size * 4
+        scale = canvas_size / 256
+        image = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
 
         def point(x: int, y: int) -> tuple[int, int]:
@@ -84,20 +86,19 @@ def generate_icon(icon_path: Path) -> None:
             left, top, right, bottom = coords
             return round(left * scale), round(top * scale), round(right * scale), round(bottom * scale)
 
-        radius = max(3, round(48 * scale))
-        draw.rounded_rectangle(box((20, 20, 236, 236)), radius=radius, fill="#172554")
-        draw.rounded_rectangle(box((34, 34, 222, 222)), radius=max(2, round(38 * scale)), fill="#2563eb")
-        draw.polygon(
-            [point(78, 58), point(178, 128), point(78, 198)],
-            fill="#ffffff",
-        )
-        draw.rounded_rectangle(box((80, 66, 152, 190)), radius=max(2, round(14 * scale)), fill="#ffffff")
-        draw.rectangle(box((116, 66, 152, 190)), fill="#ffffff")
-        draw.polygon([point(126, 82), point(188, 128), point(126, 174)], fill="#34d399")
-        draw.line([point(84, 186), point(172, 186)], fill="#34d399", width=max(2, round(12 * scale)))
-        draw.line([point(152, 154), point(190, 154)], fill="#ffffff", width=max(2, round(10 * scale)))
-        draw.polygon([point(194, 154), point(170, 136), point(170, 172)], fill="#ffffff")
-        images.append(image)
+        draw.rounded_rectangle(box((18, 18, 238, 238)), radius=max(8, round(44 * scale)), fill="#111827")
+        draw.rounded_rectangle(box((32, 32, 224, 224)), radius=max(6, round(34 * scale)), fill="#2563eb")
+        draw.polygon([point(86, 66), point(178, 128), point(86, 190)], fill="#ffffff")
+        draw.rounded_rectangle(box((74, 188, 182, 206)), radius=max(2, round(8 * scale)), fill="#34d399")
+        if size >= 32:
+            draw.polygon([point(128, 82), point(186, 128), point(128, 174)], fill="#34d399")
+            draw.rounded_rectangle(box((58, 52, 78, 204)), radius=max(2, round(8 * scale)), fill="#ffffff")
+        if size >= 64:
+            draw.line([point(154, 156), point(192, 156)], fill="#ffffff", width=max(5, round(10 * scale)))
+            draw.polygon([point(198, 156), point(174, 138), point(174, 174)], fill="#ffffff")
+
+        resample = getattr(Image, "Resampling", Image).LANCZOS
+        images.append(image.resize((size, size), resample))
     images[-1].save(icon_path, sizes=[(size, size) for size in sizes], append_images=images[:-1])
     log(f"Generated icon: {icon_path}")
 
@@ -127,7 +128,7 @@ def write_version_file(path: Path, version: str, description: str, original_file
         StringStruct('FileVersion', '{version}'),
         StringStruct('LegalCopyright', 'Copyright (C) 2026 PWO-CHINA'),
         StringStruct('OriginalFilename', '{original_filename}'),
-        StringStruct('ProductName', 'Yanhekt Downloader'),
+        StringStruct('ProductName', 'yanhekt/延河课堂录屏下载器'),
         StringStruct('ProductVersion', '{version}')])
       ]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])
@@ -175,6 +176,7 @@ def copy_payload_files() -> None:
         shutil.copy2(source, PAYLOAD_DIR / filename)
     for filename in ["README.md", "LICENSE", "VERSION"]:
         shutil.copy2(REPO / filename, PAYLOAD_DIR / filename)
+    shutil.copy2(META_DIR / APP_ICON, PAYLOAD_DIR / APP_ICON)
     shutil.copy2(find_ffmpeg(), PAYLOAD_DIR / "ffmpeg.exe")
     log(f"Assembled installer payload: {PAYLOAD_DIR}")
 
@@ -195,14 +197,14 @@ def build(version: str) -> Path:
     clean_dir(DIST_DIR)
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
 
-    icon = META_DIR / "yanhekt_downloader.ico"
+    icon = META_DIR / APP_ICON
     generate_icon(icon)
     gui_version = META_DIR / "version_gui.txt"
     worker_version = META_DIR / "version_worker.txt"
     setup_version = META_DIR / "version_setup.txt"
-    write_version_file(gui_version, version, "Yanhekt classroom recording downloader", APP_EXE)
-    write_version_file(worker_version, version, "Yanhekt downloader background worker", WORKER_EXE)
-    write_version_file(setup_version, version, "Yanhekt Downloader installer", SETUP_NAME_TEMPLATE.format(version=version))
+    write_version_file(gui_version, version, "yanhekt/延河课堂 classroom recording downloader", APP_EXE)
+    write_version_file(worker_version, version, "yanhekt/延河课堂 downloader background worker", WORKER_EXE)
+    write_version_file(setup_version, version, "yanhekt/延河课堂 downloader installer", SETUP_NAME_TEMPLATE.format(version=version))
 
     run_pyinstaller(
         [
@@ -257,7 +259,7 @@ def main() -> int:
     setup = build(version)
     print()
     print("=" * 60)
-    print(f"Built Yanhekt Downloader v{version}")
+    print(f"Built yanhekt/延河课堂 downloader v{version}")
     print(f"Installer: {setup}")
     print("=" * 60)
     return 0
