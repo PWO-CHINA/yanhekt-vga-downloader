@@ -725,6 +725,12 @@ class YanhektGui:
             return "课程链接可能不对，或当前账号无权访问该课程。请填写课堂主页网址链接，例如 https://www.yanhekt.cn/course/12345。"
         if "could not prepare the video url" in text:
             return "无法准备视频地址。请保持程序打开的浏览器窗口处于登录状态，然后重试。"
+        if "视频分片没有返回有效媒体数据" in text or "视频清单没有返回 hls 内容" in text or "读取第一个视频分片失败" in text:
+            return (
+                "视频分片没有返回有效媒体数据。常见原因是电脑时间不准、当前网络/CDN 拦截、登录状态过期，"
+                "或账号无权访问这节课。\n\n"
+                + recent
+            )
         return "任务没有完成。下面是最后几行日志，通常能说明原因：\n\n" + recent
 
     def show_failure_hint(self, code: int) -> None:
@@ -751,6 +757,8 @@ class YanhektGui:
             self.status_var.set("正在估算占用空间")
         elif "estimated size:" in line:
             self.status_var.set(line.strip())
+        elif "validating video access" in line:
+            self.status_var.set("正在检查视频分片访问")
         elif "visible browser window is needed once for login" in line or "Please log in" in line:
             self.status_var.set("请在打开的 Chrome/Edge 窗口中登录")
             if not self.login_dialog_shown:

@@ -56,12 +56,12 @@ ffmpeg 可以放在以下任一位置：
 
 ## 快速开始
 
-### 使用安装版 v0.0.6
+### 使用安装版 v0.0.7
 
 从 Releases 下载：
 
 ```text
-YanhektDownloader_Setup_v0.0.6.exe
+YanhektDownloader_Setup_v0.0.7.exe
 ```
 
 双击安装包后：
@@ -69,7 +69,7 @@ YanhektDownloader_Setup_v0.0.6.exe
 1. 选择安装文件夹，默认建议为当前用户目录下的 `Programs\YanhektDownloader`。
 2. 保持“创建桌面快捷方式”勾选，桌面会创建 `yanhekt-延河课堂录屏下载器`。
 3. 点击“安装”。
-4. 安装完成后打开 `yanhekt-延河课堂录屏下载器`。v0.0.6 会优先使用 Chrome；如果没有安装 Chrome，会自动使用系统自带的 Microsoft Edge。
+4. 安装完成后打开 `yanhekt-延河课堂录屏下载器`。v0.0.7 会优先使用 Chrome；如果没有安装 Chrome，会自动使用系统自带的 Microsoft Edge。
 5. 粘贴延河课堂课堂主页网址链接，例如 `https://www.yanhekt.cn/course/12345`。
 6. 点击“加载课程清单”，勾选要下载的课堂录屏，再点击“开始下载勾选项”。
 
@@ -226,6 +226,19 @@ python yanhekt_gui.py
 
 请在程序打开的独立 Chrome 或 Edge 窗口里登录 yanhekt/延河课堂。登录完成后不要关闭窗口，程序会继续等待并读取课程信息。
 
+### 下载到第一个分片时报 Invalid data
+
+v0.0.7 会在调用 ffmpeg 前先检查 HLS 清单和第一个视频分片，并把清单里的相对分片地址改写为带签名参数的完整地址。这样可以避免部分电脑、网络或 CDN 节点在 ffmpeg 请求未签名 `.ts` 分片时返回错误页，导致 `Invalid data found when processing input`。
+
+如果仍然提示“视频分片没有返回有效媒体数据”，请优先检查：
+
+- Windows 时间是否已自动同步。
+- 是否已经在本工具打开的专用 Chrome/Edge 窗口里重新登录。
+- 是否可以换一个稳定网络重试。
+- 当前账号是否确实有权限播放这节课。
+
+日志中出现的视频签名参数会被脱敏，便于截图反馈时降低泄露风险。
+
 ### 保存目录不可用或磁盘空间不足
 
 默认保存到用户下载文件夹下的 `YanhektDownloader`。如果你手动选择了 Program Files、受 OneDrive 管控的目录、只读 U 盘或很深的多层目录，可能会被系统拒绝写入。请改到桌面、下载文件夹或其他可写且路径较短的位置。
@@ -275,8 +288,8 @@ packaging\build_release.bat
 发布时建议创建 Git tag：
 
 ```powershell
-git tag v0.0.6
-git push origin v0.0.6
+git tag v0.0.7
+git push origin v0.0.7
 ```
 
 ## 仓库卫生

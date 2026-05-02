@@ -275,6 +275,94 @@ class FilenameTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "路径太深"):
                     downloader.ensure_writable_directory(too_deep)
 
+    def test_with_playlist_query_appends_signed_params_to_segments(self) -> None:
+        playlist = "https://cvideo.yanhekt.cn/vod/x/VGA.m3u8?Xvideo_Token=tok&Xclient_Signature=sig"
+
+        self.assertEqual(
+            downloader.with_playlist_query(playlist, "VGA0.ts"),
+            "https://cvideo.yanhekt.cn/vod/x/VGA0.ts?Xvideo_Token=tok&Xclient_Signature=sig",
+        )
+
+    def test_with_playlist_query_preserves_existing_segment_query(self) -> None:
+        playlist = "https://cvideo.yanhekt.cn/vod/x/VGA.m3u8?Xvideo_Token=tok&Xclient_Signature=sig"
+
+        self.assertEqual(
+            downloader.with_playlist_query(playlist, "VGA0.ts?part=1&Xvideo_Token=segment"),
+            "https://cvideo.yanhekt.cn/vod/x/VGA0.ts?part=1&Xvideo_Token=segment&Xclient_Signature=sig",
+        )
+
+    def test_rewrite_playlist_text_materializes_signed_segment_urls(self) -> None:
+        playlist = "https://cvideo.yanhekt.cn/vod/x/VGA.m3u8?Xvideo_Token=tok&Xclient_Signature=sig"
+        text = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\nVGA0.ts\n"
+
+        rewritten, urls = downloader.rewrite_playlist_text(playlist, text)
+
+        self.assertIn(
+            'URI="https://cvideo.yanhekt.cn/vod/x/key.bin?Xvideo_Token=tok&Xclient_Signature=sig"',
+            rewritten,
+        )
+        self.assertIn(
+            "https://cvideo.yanhekt.cn/vod/x/VGA0.ts?Xvideo_Token=tok&Xclient_Signature=sig",
+            rewritten,
+        )
+        self.assertEqual(
+            urls,
+            ["https://cvideo.yanhekt.cn/vod/x/VGA0.ts?Xvideo_Token=tok&Xclient_Signature=sig"],
+        )
+
+    def test_redact_media_urls_in_text_hides_signed_query_values(self) -> None:
+        text = (
+            "Error loading https://cvideo.yanhekt.cn/vod/x/VGA0.ts?"
+            "Xvideo_Token=secret&Xclient_Signature=sig&part=1"
+        )
+
+        redacted = downloader.redact_media_urls_in_text(text)
+
+        self.assertNotIn("secret", redacted)
+        self.assertNotIn("sig", redacted)
+        self.assertIn("Xvideo_Token=redacted", redacted)
+        self.assertIn("part=1", redacted)
+
+    def test_prepare_ffmpeg_hls_input_writes_rewritten_playlist(self) -> None:
+        playlist = "https://cvideo.yanhekt.cn/vod/x/VGA.m3u8?Xvideo_Token=tok&Xclient_Signature=sig"
+
+        def fake_read(url: str, referer: str) -> str:
+            self.assertEqual(url, playlist)
+            return "#EXTM3U\n#EXTINF:10,\nVGA0.ts\n"
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            downloader,
+            "read_text_url",
+            side_effect=fake_read,
+        ), mock.patch.object(
+            downloader,
+            "fetch_bytes_range",
+            return_value=(b"\x47" + b"\x00" * 187, "video/mp2t"),
+        ) as fetch:
+            path = downloader.prepare_ffmpeg_hls_input(playlist, "https://www.yanhekt.cn/session/1", Path(tmp))
+            self.assertTrue(path.exists())
+            self.assertIn("Xvideo_Token=tok", path.read_text(encoding="utf-8"))
+
+        fetch.assert_called_once_with(
+            "https://cvideo.yanhekt.cn/vod/x/VGA0.ts?Xvideo_Token=tok&Xclient_Signature=sig",
+            "https://www.yanhekt.cn/session/1",
+        )
+
+    def test_prepare_ffmpeg_hls_input_rejects_html_segment(self) -> None:
+        playlist = "https://cvideo.yanhekt.cn/vod/x/VGA.m3u8?Xvideo_Token=tok&Xclient_Signature=sig"
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            downloader,
+            "read_text_url",
+            return_value="#EXTM3U\nVGA0.ts\n",
+        ), mock.patch.object(
+            downloader,
+            "fetch_bytes_range",
+            return_value=(b"<html>login expired</html>", "text/html"),
+        ):
+            with self.assertRaises(downloader.MediaAccessError):
+                downloader.prepare_ffmpeg_hls_input(playlist, "https://www.yanhekt.cn/session/1", Path(tmp))
+
     def test_chrome_launch_args_can_run_headless(self) -> None:
         args = downloader.chrome_launch_args(
             "chrome.exe",

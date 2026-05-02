@@ -23,7 +23,9 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -149,6 +151,10 @@ class CdpError(RuntimeError):
 
 
 class InsufficientSpaceError(OSError):
+    pass
+
+
+class MediaAccessError(RuntimeError):
     pass
 
 
@@ -1012,13 +1018,7 @@ def parse_duration(value: Any) -> float | None:
 
 
 def ffmpeg_headers(referer: str) -> str:
-    return (
-        "Origin: https://www.yanhekt.cn\r\n"
-        "Sec-Fetch-Site: cross-site\r\n"
-        "Sec-Fetch-Mode: cors\r\n"
-        "Sec-Fetch-Dest: empty\r\n"
-        f"Referer: {referer}\r\n"
-    )
+    return "".join(f"{key}: {value}\r\n" for key, value in video_request_headers(referer).items())
 
 
 def video_request_headers(referer: str, extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -1026,6 +1026,7 @@ def video_request_headers(referer: str, extra: dict[str, str] | None = None) -> 
         "User-Agent": USER_AGENT,
         "Referer": referer,
         "Origin": "https://www.yanhekt.cn",
+        "Accept": "*/*",
         "Sec-Fetch-Site": "cross-site",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
@@ -1041,6 +1042,20 @@ def read_text_url(url: str, referer: str) -> str:
         return resp.read().decode("utf-8", "replace")
 
 
+def merge_query_values(base_query: str, extra_query: str) -> str:
+    if not base_query:
+        return extra_query
+    if not extra_query:
+        return base_query
+    pairs = urllib.parse.parse_qsl(extra_query, keep_blank_values=True)
+    existing = {key for key, _value in pairs}
+    for key, value in urllib.parse.parse_qsl(base_query, keep_blank_values=True):
+        if key not in existing:
+            pairs.append((key, value))
+            existing.add(key)
+    return urllib.parse.urlencode(pairs, doseq=True)
+
+
 def with_playlist_query(playlist_url: str, segment_url: str) -> str:
     if urllib.parse.urlparse(segment_url).scheme:
         absolute = segment_url
@@ -1050,8 +1065,9 @@ def with_playlist_query(playlist_url: str, segment_url: str) -> str:
 
     playlist_query = urllib.parse.urlparse(playlist_url).query
     parsed = urllib.parse.urlparse(absolute)
-    if playlist_query and not parsed.query:
-        absolute = urllib.parse.urlunparse(parsed._replace(query=playlist_query))
+    query = merge_query_values(playlist_query, parsed.query)
+    if query != parsed.query:
+        absolute = urllib.parse.urlunparse(parsed._replace(query=query))
     return absolute
 
 
@@ -1063,6 +1079,184 @@ def parse_playlist_urls(playlist_url: str, playlist_text: str) -> list[str]:
             continue
         urls.append(with_playlist_query(playlist_url, line))
     return urls
+
+
+def is_hls_playlist_url(url: str) -> bool:
+    return urllib.parse.urlparse(url).path.lower().endswith(".m3u8")
+
+
+def first_text_prefix(data: bytes, limit: int = 160) -> str:
+    text = data[:limit].decode("utf-8", "replace")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def redact_media_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.query:
+        return urllib.parse.urlunparse(parsed)
+    sensitive_keys = {
+        "xvideo_token",
+        "xclient_signature",
+        "xclient_timestamp",
+        "xclient_version",
+        "platform",
+        "token",
+        "signature",
+        "sign",
+        "auth",
+        "authorization",
+        "key",
+    }
+    redacted_pairs = []
+    for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+        redacted_pairs.append((key, "redacted" if key.lower() in sensitive_keys else value))
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(redacted_pairs)))
+
+
+def redact_media_urls_in_text(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        url = match.group(0).rstrip(".,;:)")
+        suffix = match.group(0)[len(url):]
+        return redact_media_url(url) + suffix
+
+    return re.sub(r"https?://[^\s'\"<>]+", replace, text)
+
+
+def rewrite_hls_uri_attributes(line: str, playlist_url: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        return f'URI="{with_playlist_query(playlist_url, match.group(1))}"'
+
+    return re.sub(r'URI="([^"]+)"', replace, line)
+
+
+def rewrite_playlist_text(playlist_url: str, playlist_text: str) -> tuple[str, list[str]]:
+    rewritten_lines: list[str] = []
+    media_urls: list[str] = []
+    for raw_line in playlist_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            rewritten_lines.append(raw_line)
+            continue
+        if line.startswith("#"):
+            rewritten_lines.append(rewrite_hls_uri_attributes(raw_line, playlist_url))
+            continue
+        rewritten = with_playlist_query(playlist_url, line)
+        rewritten_lines.append(rewritten)
+        media_urls.append(rewritten)
+    trailing_newline = "\n" if playlist_text.endswith(("\n", "\r")) else ""
+    return "\n".join(rewritten_lines) + trailing_newline, media_urls
+
+
+def fetch_bytes_range(url: str, referer: str, length: int = 188) -> tuple[bytes, str]:
+    req = urllib.request.Request(
+        url,
+        headers=video_request_headers(referer, {"Range": f"bytes=0-{max(0, length - 1)}"}),
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read(length)
+            return data, resp.headers.get("Content-Type", "")
+    except urllib.error.HTTPError as exc:
+        data = exc.read(length)
+        content_type = exc.headers.get("Content-Type", "")
+        raise media_access_error(url, f"HTTP {exc.code} {content_type}".strip(), data) from exc
+
+
+def looks_like_media_segment(data: bytes, content_type: str = "") -> bool:
+    stripped = data.lstrip()
+    if not stripped:
+        return False
+    if stripped.startswith((b"\x47", b"ftyp", b"styp")):
+        return True
+    lowered = content_type.lower()
+    if any(token in lowered for token in ("text", "json", "xml", "html")):
+        return False
+    if stripped.startswith((b"<", b"{", b"[")):
+        return False
+    prefix = stripped[:80].lower()
+    if any(
+        marker in prefix
+        for marker in (b"forbidden", b"unauthorized", b"access denied", b"invalid", b"error")
+    ):
+        return False
+    if any(token in lowered for token in ("video", "mpeg", "mp2t", "octet-stream", "binary")):
+        return True
+    return len(stripped) >= 16
+
+
+def media_access_error(url: str, content_type: str, data: bytes) -> MediaAccessError:
+    prefix = first_text_prefix(data)
+    details = [
+        "视频分片没有返回有效媒体数据。",
+        f"分片地址：{redact_media_url(url)}",
+        f"Content-Type：{content_type or 'unknown'}",
+    ]
+    if prefix:
+        details.append(f"响应开头：{prefix}")
+    details.append("常见原因：电脑时间不准、当前网络/CDN 拦截了视频分片、登录状态过期，或该账号无权访问这节课。")
+    details.append("建议先同步 Windows 时间，换到稳定网络后重新登录本工具打开的 Chrome/Edge 专用窗口再试。")
+    return MediaAccessError("\n".join(details))
+
+
+def read_playlist_text_checked(url: str, referer: str, label: str) -> str:
+    try:
+        playlist_text = read_text_url(url, referer)
+    except urllib.error.HTTPError as exc:
+        data = exc.read(160)
+        raise MediaAccessError(
+            f"{label}读取失败。\n"
+            f"清单地址：{redact_media_url(url)}\n"
+            f"HTTP 状态：{exc.code}\n"
+            f"响应开头：{first_text_prefix(data)}\n"
+            "常见原因：电脑时间不准、当前网络/CDN 拦截，或登录状态过期。"
+        ) from exc
+    except Exception as exc:
+        raise MediaAccessError(
+            f"{label}读取失败。\n"
+            f"清单地址：{redact_media_url(url)}\n"
+            f"错误：{exc}\n"
+            "常见原因：当前网络不稳定、系统代理/安全软件拦截，或登录状态过期。"
+        ) from exc
+    if not playlist_text.lstrip().startswith("#EXTM3U"):
+        raise MediaAccessError(
+            f"{label}没有返回 HLS 内容，可能是登录过期或网络返回了错误页。\n"
+            f"清单地址：{redact_media_url(url)}\n"
+            f"响应开头：{first_text_prefix(playlist_text.encode('utf-8', 'replace'))}"
+        )
+    return playlist_text
+
+
+def prepare_ffmpeg_hls_input(signed_url: str, referer: str, work_dir: Path) -> Path:
+    playlist_text = read_playlist_text_checked(signed_url, referer, "视频清单")
+    rewritten_text, media_urls = rewrite_playlist_text(signed_url, playlist_text)
+    nested_playlists = [url for url in media_urls if is_hls_playlist_url(url)]
+    if nested_playlists and len(nested_playlists) == len(media_urls):
+        nested_url = nested_playlists[0]
+        playlist_text = read_playlist_text_checked(nested_url, referer, "子视频清单")
+        rewritten_text, media_urls = rewrite_playlist_text(nested_url, playlist_text)
+
+    segments = [url for url in media_urls if not is_hls_playlist_url(url)]
+    if not segments:
+        raise MediaAccessError("视频清单里没有找到可下载的视频分片。")
+
+    first_segment = segments[0]
+    try:
+        data, content_type = fetch_bytes_range(first_segment, referer)
+    except MediaAccessError:
+        raise
+    except Exception as exc:
+        raise MediaAccessError(
+            "读取第一个视频分片失败。\n"
+            f"分片地址：{redact_media_url(first_segment)}\n"
+            f"错误：{exc}\n"
+            "常见原因：电脑时间不准、当前网络/CDN 拦截了视频分片，或登录状态过期。"
+        ) from exc
+    if not looks_like_media_segment(data, content_type):
+        raise media_access_error(first_segment, content_type, data)
+
+    playlist_path = work_dir / "yanhekt_signed_input.m3u8"
+    playlist_path.write_text(rewritten_text, encoding="utf-8", newline="\n")
+    return playlist_path
 
 
 def content_length(url: str, referer: str) -> int | None:
@@ -1203,6 +1397,8 @@ def run_ffmpeg(
         "1",
         "-progress",
         "pipe:1",
+        "-protocol_whitelist",
+        "file,http,https,tcp,tls,crypto",
         "-user_agent",
         USER_AGENT,
         "-referer",
@@ -1240,7 +1436,7 @@ def run_ffmpeg(
         if not line:
             continue
         if "=" not in line:
-            ffmpeg_messages.append(line)
+            ffmpeg_messages.append(redact_media_urls_in_text(line))
             ffmpeg_messages = ffmpeg_messages[-30:]
             continue
         key, value = line.split("=", 1)
@@ -1634,13 +1830,14 @@ def main() -> int:
                 log(f"[failed] {output.name}: {exc}", err=True)
                 return 2
 
+            referer = item.get("session_url") or course_url
             expected_size = None
             if not args.no_size_estimate:
                 log("  estimating disk usage...")
                 try:
                     expected_size, segment_count = estimate_hls_size(
                         signed_url,
-                        item.get("session_url") or course_url,
+                        referer,
                         sample_segments=args.size_sample_segments,
                         workers=args.size_workers,
                     )
@@ -1661,17 +1858,23 @@ def main() -> int:
                     log(f"  estimated size: unknown ({exc})")
 
             try:
-                run_ffmpeg(
-                    ffmpeg,
-                    signed_url,
-                    output,
-                    item.get("session_url") or course_url,
-                    args.overwrite,
-                    duration,
-                    expected_size,
-                    f"  downloading",
-                    progress_lines=args.progress_lines,
-                )
+                with tempfile.TemporaryDirectory(prefix="yanhekt-hls-") as tmp:
+                    log("  validating video access...")
+                    ffmpeg_input = prepare_ffmpeg_hls_input(signed_url, referer, Path(tmp))
+                    run_ffmpeg(
+                        ffmpeg,
+                        str(ffmpeg_input),
+                        output,
+                        referer,
+                        args.overwrite,
+                        duration,
+                        expected_size,
+                        f"  downloading",
+                        progress_lines=args.progress_lines,
+                    )
+            except MediaAccessError as exc:
+                log(f"[failed] {output.name}: {exc}", err=True)
+                return 2
             except subprocess.CalledProcessError as exc:
                 log(f"[failed] {output.name}: ffmpeg exited with {exc.returncode}", err=True)
                 return exc.returncode or 1
