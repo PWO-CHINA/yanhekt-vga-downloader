@@ -1,4 +1,6 @@
+import importlib.util
 import json
+import queue
 import tempfile
 import unittest
 from unittest import mock
@@ -6,6 +8,16 @@ from pathlib import Path
 
 import yanhekt_downloader as downloader
 import yanhekt_gui
+
+
+def load_installer_module():
+    installer_path = Path(__file__).resolve().parent / "packaging" / "installer.py"
+    spec = importlib.util.spec_from_file_location("yanhekt_packaging_installer", installer_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load installer module from {installer_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def fake_mp4() -> bytes:
@@ -255,6 +267,149 @@ class FilenameTests(unittest.TestCase):
         self.assertTrue(line.startswith(downloader.PLAN_JSON_PREFIX))
         decoded = json.loads(line[len(downloader.PLAN_JSON_PREFIX):])
         self.assertEqual(decoded, payload)
+
+
+class InstallerTests(unittest.TestCase):
+    def test_create_desktop_shortcut_uses_resolved_desktop_and_verifies_file(self) -> None:
+        installer = load_installer_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_dir = root / "Install Dir"
+            install_dir.mkdir()
+            desktop = root / "Redirected Desktop"
+            logs: list[str] = []
+
+            def fake_save(target: Path, shortcut: Path, working_dir: Path, description: str, icon: str) -> None:
+                self.assertEqual(target, install_dir / installer.EXE_NAME)
+                self.assertEqual(shortcut, desktop / f"{installer.APP_NAME}.lnk")
+                self.assertEqual(working_dir, install_dir)
+                self.assertEqual(description, installer.APP_NAME)
+                self.assertTrue(icon.endswith(",0"))
+                shortcut.write_text("shortcut", encoding="utf-8")
+
+            with mock.patch.object(installer, "desktop_path", return_value=desktop), mock.patch.object(
+                installer,
+                "save_shell_shortcut",
+                side_effect=fake_save,
+            ):
+                self.assertTrue(installer.create_desktop_shortcut(install_dir, logs.append))
+
+            self.assertTrue((desktop / f"{installer.APP_NAME}.lnk").exists())
+            self.assertIn("已创建桌面快捷方式", logs[-1])
+
+    def test_create_desktop_shortcut_fails_if_lnk_was_not_created(self) -> None:
+        installer = load_installer_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_dir = root / "Install"
+            install_dir.mkdir()
+            desktop = root / "Desktop"
+            logs: list[str] = []
+            with mock.patch.object(installer, "desktop_path", return_value=desktop), mock.patch.object(
+                installer,
+                "save_shell_shortcut",
+                return_value=None,
+            ):
+                self.assertFalse(installer.create_desktop_shortcut(install_dir, logs.append))
+
+            self.assertIn("桌面快捷方式创建失败", logs[-1])
+
+
+class GuiCompletionTests(unittest.TestCase):
+    class FakeVar:
+        def __init__(self) -> None:
+            self.value = None
+
+        def set(self, value: object) -> None:
+            self.value = value
+
+    class FakeRoot:
+        def __init__(self) -> None:
+            self.scheduled: list[tuple[int, object]] = []
+
+        def after(self, delay_ms: int, callback: object) -> None:
+            self.scheduled.append((delay_ms, callback))
+
+        def destroy(self) -> None:
+            pass
+
+    def poll_done(self, mode: str, code: int):
+        gui = yanhekt_gui.YanhektGui.__new__(yanhekt_gui.YanhektGui)
+        gui.events = queue.Queue()
+        gui.events.put(("done", code))
+        gui.process = mock.Mock()
+        gui.process_mode = mode
+        gui.plan_items = []
+        gui.progress_var = self.FakeVar()
+        gui.status_var = self.FakeVar()
+        gui.root = self.FakeRoot()
+        gui.set_running = mock.Mock()
+        gui.append_log = mock.Mock()
+
+        yanhekt_gui.YanhektGui.poll_events(gui)
+        return gui
+
+    def has_destroy_callback(self, gui: yanhekt_gui.YanhektGui) -> bool:
+        return any(
+            delay == yanhekt_gui.AUTO_EXIT_DELAY_MS and getattr(callback, "__name__", "") == "destroy"
+            for delay, callback in gui.root.scheduled
+        )
+
+    def test_download_success_schedules_auto_exit(self) -> None:
+        gui = self.poll_done("download", 0)
+
+        self.assertEqual(gui.progress_var.value, 100.0)
+        self.assertEqual(gui.status_var.value, "下载完成，程序即将退出")
+        self.assertTrue(self.has_destroy_callback(gui))
+
+    def test_plan_success_does_not_auto_exit(self) -> None:
+        gui = self.poll_done("plan", 0)
+
+        self.assertFalse(self.has_destroy_callback(gui))
+
+    def test_download_failure_does_not_auto_exit(self) -> None:
+        gui = self.poll_done("download", 2)
+
+        self.assertEqual(gui.status_var.value, "已退出，代码 2")
+        self.assertFalse(self.has_destroy_callback(gui))
+
+
+class ProcessCleanupTests(unittest.TestCase):
+    class FakeProcess:
+        pid = 12345
+
+        def __init__(self) -> None:
+            self.waited = False
+            self.terminated = False
+            self.killed = False
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.waited = True
+            self.returncode = 0
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+    def test_terminate_process_waits_for_process_exit(self) -> None:
+        proc = self.FakeProcess()
+        with mock.patch.object(downloader.subprocess, "run") as run:
+            downloader.terminate_process(proc)
+
+        self.assertTrue(proc.waited)
+        if downloader.os.name == "nt":
+            run.assert_called_once()
+            self.assertFalse(proc.terminated)
+        else:
+            self.assertTrue(proc.terminated)
 
 
 if __name__ == "__main__":

@@ -80,6 +80,29 @@ def no_window_creationflags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def terminate_process(proc: subprocess.Popen[Any], timeout: float = 5.0) -> None:
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            creationflags=no_window_creationflags(),
+        )
+    else:
+        proc.terminate()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def is_managed_profile_dir(path: Path) -> bool:
     try:
         resolved = path.expanduser().resolve()
@@ -1287,16 +1310,12 @@ def main() -> int:
     launched_headless = False
     def cleanup_launched() -> None:
         if launched_proc is not None and not args.keep_browser_open:
-            launched_proc.terminate()
+            terminate_process(launched_proc)
 
     def stop_launched_for_reconnect() -> None:
         nonlocal launched_proc, launched_headless
         if launched_proc is not None and launched_proc.poll() is None:
-            launched_proc.terminate()
-            try:
-                launched_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                launched_proc.kill()
+            terminate_process(launched_proc)
         launched_proc = None
         launched_headless = False
 

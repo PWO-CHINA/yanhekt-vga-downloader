@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import shutil
 import subprocess
@@ -13,11 +14,45 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 import tkinter as tk
+import uuid
 
 
 APP_NAME = "Yanhekt Downloader"
 EXE_NAME = "YanhektDownloader.exe"
 PAYLOAD_NAME = "release_payload.zip"
+
+CLSID_SHELL_LINK = "00021401-0000-0000-C000-000000000046"
+IID_ISHELL_LINK_W = "000214F9-0000-0000-C000-000000000046"
+IID_IPERSIST_FILE = "0000010b-0000-0000-C000-000000000046"
+FOLDERID_DESKTOP = "B4BFCC3A-DB2C-424C-B029-7FE99A87C641"
+CLSCTX_INPROC_SERVER = 1
+
+
+class Guid(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+    def __init__(self, value: str) -> None:
+        parsed = uuid.UUID(value)
+        super().__init__(
+            parsed.time_low,
+            parsed.time_mid,
+            parsed.time_hi_version,
+            (ctypes.c_ubyte * 8).from_buffer_copy(parsed.bytes[8:]),
+        )
+
+
+def hresult_failed(value: int) -> bool:
+    return ctypes.c_long(value).value < 0
+
+
+def check_hresult(value: int, action: str) -> None:
+    if hresult_failed(value):
+        raise OSError(f"{action} failed with HRESULT 0x{value & 0xFFFFFFFF:08X}")
 
 
 def default_install_dir() -> Path:
@@ -55,39 +90,121 @@ def extract_payload(install_dir: Path, log: Callable[[str], None]) -> None:
     log(f"已安装到：{install_dir}")
 
 
+def known_folder_path(folder_id: str) -> Path | None:
+    if os.name != "nt":
+        return None
+    shell32 = ctypes.windll.shell32
+    ole32 = ctypes.windll.ole32
+    path_ptr = ctypes.c_void_p()
+    result = shell32.SHGetKnownFolderPath(
+        ctypes.byref(Guid(folder_id)),
+        0,
+        None,
+        ctypes.byref(path_ptr),
+    )
+    if hresult_failed(result) or not path_ptr.value:
+        return None
+    try:
+        return Path(ctypes.wstring_at(path_ptr))
+    finally:
+        ole32.CoTaskMemFree(path_ptr)
+
+
 def desktop_path() -> Path:
+    known_desktop = known_folder_path(FOLDERID_DESKTOP)
+    if known_desktop is not None:
+        return known_desktop
     return Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
 
 
-def ps_quote(value: str | Path) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
+def com_method(pointer: ctypes.c_void_p, index: int, restype: object, *argtypes: object) -> object:
+    vtable = ctypes.cast(pointer, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    prototype = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)
+    return prototype(vtable[index])
+
+
+def release_com_object(pointer: ctypes.c_void_p | None) -> None:
+    if pointer and pointer.value:
+        release = com_method(pointer, 2, ctypes.c_ulong)
+        release(pointer)
+
+
+def save_shell_shortcut(
+    target: Path,
+    shortcut: Path,
+    working_dir: Path,
+    description: str,
+    icon_location: str,
+) -> None:
+    if os.name != "nt":
+        raise OSError("Windows shortcuts are only supported on Windows.")
+
+    ole32 = ctypes.oledll.ole32
+    shell_link = ctypes.c_void_p()
+    persist_file = ctypes.c_void_p()
+    initialized = False
+    init_result = ole32.CoInitialize(None)
+    if init_result in (0, 1):
+        initialized = True
+    try:
+        check_hresult(
+            ole32.CoCreateInstance(
+                ctypes.byref(Guid(CLSID_SHELL_LINK)),
+                None,
+                CLSCTX_INPROC_SERVER,
+                ctypes.byref(Guid(IID_ISHELL_LINK_W)),
+                ctypes.byref(shell_link),
+            ),
+            "Create ShellLink",
+        )
+        set_description = com_method(shell_link, 7, ctypes.c_long, ctypes.c_wchar_p)
+        set_working_dir = com_method(shell_link, 9, ctypes.c_long, ctypes.c_wchar_p)
+        set_icon = com_method(shell_link, 17, ctypes.c_long, ctypes.c_wchar_p, ctypes.c_int)
+        set_path = com_method(shell_link, 20, ctypes.c_long, ctypes.c_wchar_p)
+        check_hresult(set_description(shell_link, description), "Set shortcut description")
+        check_hresult(set_working_dir(shell_link, str(working_dir)), "Set shortcut working directory")
+        check_hresult(set_icon(shell_link, icon_location, 0), "Set shortcut icon")
+        check_hresult(set_path(shell_link, str(target)), "Set shortcut target")
+
+        query_interface = com_method(
+            shell_link,
+            0,
+            ctypes.c_long,
+            ctypes.POINTER(Guid),
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        check_hresult(
+            query_interface(shell_link, ctypes.byref(Guid(IID_IPERSIST_FILE)), ctypes.byref(persist_file)),
+            "Query IPersistFile",
+        )
+        save = com_method(persist_file, 6, ctypes.c_long, ctypes.c_wchar_p, ctypes.c_int)
+        check_hresult(save(persist_file, str(shortcut), True), "Save shortcut")
+    finally:
+        release_com_object(persist_file)
+        release_com_object(shell_link)
+        if initialized:
+            ole32.CoUninitialize()
 
 
 def create_desktop_shortcut(install_dir: Path, log: Callable[[str], None]) -> bool:
     target = install_dir / EXE_NAME
     shortcut = desktop_path() / f"{APP_NAME}.lnk"
-    script = "\n".join(
-        [
-            "$shell = New-Object -ComObject WScript.Shell",
-            f"$shortcut = $shell.CreateShortcut({ps_quote(shortcut)})",
-            f"$shortcut.TargetPath = {ps_quote(target)}",
-            f"$shortcut.WorkingDirectory = {ps_quote(install_dir)}",
-            f"$shortcut.IconLocation = {ps_quote(str(target) + ',0')}",
-            "$shortcut.Save()",
-        ]
-    )
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=flags,
-        check=False,
-    )
-    if result.returncode == 0:
+    try:
+        shortcut.parent.mkdir(parents=True, exist_ok=True)
+        save_shell_shortcut(
+            target,
+            shortcut,
+            install_dir,
+            APP_NAME,
+            f"{target},0",
+        )
+    except Exception as exc:
+        log(f"桌面快捷方式创建失败：{exc}")
+        return False
+    if shortcut.exists():
         log(f"已创建桌面快捷方式：{shortcut}")
         return True
-    log("桌面快捷方式创建失败，但程序已经安装完成。")
+    log(f"桌面快捷方式创建失败：未找到生成的文件 {shortcut}")
     return False
 
 

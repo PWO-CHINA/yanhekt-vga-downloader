@@ -56,12 +56,12 @@ ffmpeg 可以放在以下任一位置：
 
 ## 快速开始
 
-### 使用安装版 v0.0.2
+### 使用安装版 v0.0.3
 
 从 Releases 下载：
 
 ```text
-YanhektDownloader_Setup_v0.0.2.exe
+YanhektDownloader_Setup_v0.0.3.exe
 ```
 
 双击安装包后：
@@ -69,7 +69,7 @@ YanhektDownloader_Setup_v0.0.2.exe
 1. 选择安装文件夹，默认建议为当前用户目录下的 `Programs\YanhektDownloader`。
 2. 保持“创建桌面快捷方式”勾选。
 3. 点击“安装”。
-4. 安装完成后打开 `Yanhekt Downloader`。
+4. 安装完成后打开 `Yanhekt Downloader`。v0.0.3 会更可靠地创建桌面快捷方式，支持 OneDrive 或系统策略重定向后的桌面路径。
 5. 粘贴延河课堂课堂主页网址链接，例如 `https://www.yanhekt.cn/course/12345`。
 6. 点击“加载课程清单”，勾选要下载的课堂录屏，再点击“开始下载勾选项”。
 
@@ -98,7 +98,7 @@ START_YANHEKT_GUI.bat
 2. 选择保存目录，默认是 `downloads/`。
 3. 点击“加载课程清单”。
 4. 在表格中勾选要下载的课程，并预览每个文件的保存名称。
-5. 点击“下载勾选项”。
+5. 点击“下载勾选项”。下载成功后 GUI 会短暂停留提示完成，然后自动退出。
 
 注意：这里需要的是课程列表页 `course/数字`，不是单节播放页 `session/数字`。也可以直接输入课程 ID，例如 `12345`。
 
@@ -249,13 +249,13 @@ packaging\build_release.bat
 - 生成 Windows exe 版本元数据。
 - 使用 PyInstaller 构建 `YanhektDownloader.exe` 和 `YanhektDownloaderWorker.exe`。
 - 复制 `README.md`、`LICENSE`、`VERSION` 和 `ffmpeg.exe` 到安装 payload。
-- 生成最终安装包 `release\YanhektDownloader_Setup_v0.0.2.exe`。
+- 生成最终安装包 `release\YanhektDownloader_Setup_v0.0.3.exe`。
 
 发布时建议创建 Git tag：
 
 ```powershell
-git tag v0.0.2
-git push origin v0.0.2
+git tag v0.0.3
+git push origin v0.0.3
 ```
 
 ## 仓库卫生

@@ -45,6 +45,7 @@ DISABLED_BG = "#e6ebf2"
 DISABLED_TEXT = "#94a3b8"
 FONT = ("Microsoft YaHei UI", 10)
 FONT_BOLD = ("Microsoft YaHei UI", 10, "bold")
+AUTO_EXIT_DELAY_MS = 1200
 
 
 def downloader_command_base() -> list[str]:
@@ -630,8 +631,9 @@ class YanhektGui:
                 if code == 0:
                     if mode == "download":
                         self.progress_var.set(100.0)
-                        self.status_var.set("下载完成")
-                        self.append_log("=== 下载完成 ===\n")
+                        self.status_var.set("下载完成，程序即将退出")
+                        self.append_log("=== 下载完成，程序即将退出 ===\n")
+                        self.root.after(AUTO_EXIT_DELAY_MS, self.root.destroy)
                     elif mode == "plan" and not self.plan_items:
                         self.status_var.set("没有读取到课程清单")
                     else:
